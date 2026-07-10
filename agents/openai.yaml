@@ -1,0 +1,5 @@
+interface:
+  display_name: "重庆公共资源交易网投标防水材料分析"
+  short_description: "从cqggzy.com中标候选人公示提取防水材料数据并生成报告"
+  brand_color: "#0f3460"
+  default_prompt: "Use $cqggzy-waterproof-extractor to analyze the waterproof materials from this cqggzy.com bid candidate announcement URL"
