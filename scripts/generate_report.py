@@ -91,38 +91,136 @@ def fmt_pct(n, total):
     if total and total > 0: return f"{n/total*100:.2f}%"
     return "\u2014"
 
-def render_item_table(title, icon, icon_cls, items, type_label):
+def merge_items_by_name(items, max_parts=3):
+    """把同名材料合并成一条：工程量求和、合价求和，部位归并显示。
+
+    同名 = (材料大类, 材料名称) 完全相同。合并后 `_merged_n` 记录原本有几条。
+
+    部位显示规则：
+      - 只出现在一个单体 → 「地下室 · 墙面、楼面」
+      - 跨多个单体       → 「地下室、1#楼、2#楼（共10处）」
+    """
+    order, groups = [], {}
+    for it in items:
+        k = (it.get('type'), it.get('name'))
+        if k not in groups:
+            groups[k] = {'base': dict(it), 'bldgs': [], 'parts': [],
+                         'qty': 0.0, 'tp': 0.0, 'n': 0, 'nloc': 0}
+            order.append(k)
+        g = groups[k]
+        g['qty'] += it.get('quantity', 0) or 0
+        g['tp'] += it.get('total_price', 0) or 0
+        g['n'] += 1
+        b = (it.get('building') or '').strip()
+        part = (it.get('location') or '').strip()
+        if b or part:
+            g['nloc'] += 1
+        if b and b not in g['bldgs']:
+            g['bldgs'].append(b)
+        if part and part not in g['parts']:
+            g['parts'].append(part)
+
+    out = []
+    for k in order:
+        g = groups[k]
+        it = g['base']
+        it['quantity'] = round(g['qty'], 2)
+        it['total_price'] = round(g['tp'], 2)
+        if g['qty'] > 0:
+            it['unit_price'] = round(g['tp'] / g['qty'], 2)
+
+        bldgs, parts = g['bldgs'], g['parts']
+        if len(bldgs) > 1:
+            it['location'] = '、'.join(bldgs) + f'（共{g["nloc"]}处）'
+        else:
+            head = bldgs[0] if bldgs else ''
+            if len(parts) > max_parts:
+                ptxt = '、'.join(parts[:max_parts]) + f' 等{len(parts)}处'
+            else:
+                ptxt = '、'.join(parts)
+            it['location'] = ' · '.join(x for x in [head, ptxt] if x)
+
+        it.pop('building', None)
+        it['_merged_n'] = g['n']
+        out.append(it)
+    return out
+
+
+def render_item_table(title, icon, icon_cls, items, type_label, discount_ratio=None, has_price=True):
     if not items: return ""
     tag_map = {"防水卷材": "membrane", "防水涂料": "coating", "防水砂浆": "mortar", "其他": "mortar"}
     tag_cls = tag_map.get(type_label, "mortar")
-    h = f'<div class="section-card"><div class="section-header"><div class="icon {icon_cls}">{icon}</div><h2>{title}</h2></div><div class="section-body"><table><thead><tr><th>序号</th><th>部位</th><th>材料名称</th><th>单位</th><th class="num">工程量</th><th class="num">综合单价(元)</th><th class="num">合价(元)</th></tr></thead><tbody>'
+    has_adj = has_price and discount_ratio is not None and discount_ratio > 0
+
+    # Header
+    if has_adj:
+        h = f'<div class="section-card"><div class="section-header"><div class="icon {icon_cls}">{icon}</div><h2>{title}</h2></div><div class="section-body"><table><thead><tr><th>序号</th><th>部位</th><th>材料名称</th><th>单位</th><th class="num">工程量</th><th class="num">综合单价(元)</th><th class="num">下浮后单价(元)</th><th class="num">合价(元)</th><th class="num">下浮后合价(元)</th></tr></thead><tbody>'
+    elif has_price:
+        h = f'<div class="section-card"><div class="section-header"><div class="icon {icon_cls}">{icon}</div><h2>{title}</h2></div><div class="section-body"><table><thead><tr><th>序号</th><th>部位</th><th>材料名称</th><th>单位</th><th class="num">工程量</th><th class="num">综合单价(元)</th><th class="num">合价(元)</th></tr></thead><tbody>'
+    else:
+        h = f'<div class="section-card"><div class="section-header"><div class="icon {icon_cls}">{icon}</div><h2>{title}</h2></div><div class="section-body"><table><thead><tr><th>序号</th><th>部位</th><th>材料名称</th><th>单位</th><th class="num">工程量</th></tr></thead><tbody>'
+    
     for idx, it in enumerate(items, 1):
         nm = it['name'][:50]
         loc = it.get('location', '') or ''
+        bld = it.get('building', '') or ''
+        if bld:
+            loc = f'{bld} · {loc}' if loc else bld
         dao_note = it.get('_dao_note', '')
         if dao_note:
             qty_display = f"{it['quantity']:,.2f} {dao_note}"
         else:
             qty_display = f"{it['quantity']:,.2f}"
-        h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{"卷材" if type_label=="防水卷材" else "涂料" if type_label=="防水涂料" else "砂浆"}</span> {nm}</td><td>{it["unit"]}</td><td class="num">{qty_display}</td><td class="num">{it["unit_price"]:.2f}</td><td class="num">{it["total_price"]:,.2f}</td></tr>'
-    # Add total row
+        
+        tag_text = "卷材" if type_label=="防水卷材" else "涂料" if type_label=="防水涂料" else "砂浆"
+        
+        if has_adj:
+            adj_up = it["unit_price"] * (1 - discount_ratio / 100)
+            adj_tp = it["total_price"] * (1 - discount_ratio / 100)
+            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {nm}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td><td class="num">{it["unit_price"]:.2f}</td><td class="num">{adj_up:.2f}</td><td class="num">{it["total_price"]:,.2f}</td><td class="num">{adj_tp:,.2f}</td></tr>'
+        elif has_price:
+            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {nm}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td><td class="num">{it["unit_price"]:.2f}</td><td class="num">{it["total_price"]:,.2f}</td></tr>'
+        else:
+            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {nm}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td></tr>'
+    
+    # Total row
     total_qty = sum(it['quantity'] for it in items)
     total_price = sum(it['total_price'] for it in items)
-    unit = items[0]['unit'] if items else ''
-    h += f'<tr style="background:#f0fdf4;font-weight:600"><td colspan="2"></td><td><span style="color:#15803d">本类合计</span></td><td class="num">{unit}</td><td class="num">{total_qty:,.2f}</td><td></td><td class="num">{total_price:,.2f}</td></tr>'
+    unit = items[0].get('unit', 'm²') if items else ''
+    if has_adj:
+        adj_total = total_price * (1 - discount_ratio / 100)
+        h += f'<tr style="background:#f0fdf4;font-weight:600"><td colspan="2"></td><td><span style="color:#15803d">本类合计</span></td><td class="num">{unit}</td><td class="num">{total_qty:,.2f}</td><td></td><td></td><td class="num">{total_price:,.2f}</td><td class="num">{adj_total:,.2f}</td></tr>'
+    elif has_price:
+        h += f'<tr style="background:#f0fdf4;font-weight:600"><td colspan="2"></td><td><span style="color:#15803d">本类合计</span></td><td class="num">{unit}</td><td class="num">{total_qty:,.2f}</td><td></td><td class="num">{total_price:,.2f}</td></tr>'
+    else:
+        h += f'<tr style="background:#f0fdf4;font-weight:600"><td colspan="2"></td><td><span style="color:#15803d">本类合计</span></td><td class="num">{unit}</td><td class="num">{total_qty:,.2f}</td></tr>'
+    
     h += '</tbody></table></div></div>'
     return h
 
 def generate_html(data):
     items = data.get('items', [])
+    if data.get('merge_by_name'):
+        items = merge_items_by_name(items)
+    type_totals = data.get('type_totals', {})
     gt = data.get('grand_total', 0)
     bp = data.get('bid_price')
     cp = data.get('control_price')
     disc = data.get('discount_ratio')
+    # 清单里完全没有单价时（如甲方只给了工程量清单），不显示价格列和金额卡片
+    has_price = any((it.get('unit_price') or 0) > 0 for it in items)
+    if not has_price:
+        bp = cp = disc = None
+    # 有没有「招投标信息」（中标金额／最高限价／下浮比例）。
+    # 只有价格、没有中标信息的（如总包下发的分包清单），卡片改显示工程量口径。
+    has_bid = bool(bp or cp or disc is not None)
+    src = data.get('data_source', '重庆市公共资源交易网 \u00b7 答疑补遗附件 \u00b7 工程量清单.pdf')
     em = '—'
     pn = data.get('project_name', '未知项目')
     bu = data.get('bid_url', '')
     cu = data.get('clarify_url', '')
+    winner = data.get('winner') or data.get('top_candidate') or ''
+    winner_label = '中标人' if data.get('winner') else '中标候选人第一名'
     td = date.today().strftime('%Y-%m-%d')
 
     membranes = [it for it in items if it['type'] == '防水卷材']
@@ -140,20 +238,30 @@ def generate_html(data):
     # Hero
     L.append(f'<div class="hero"><div class="hero-badge">\U0001f4cb 防水材料工程量清单分析</div>')
     L.append(f'<h1>{pn}<br>防水卷材 &amp; 防水涂料工程量清单分析</h1>')
-    L.append(f'<div class="subtitle">数据来源：重庆市公共资源交易网 \u00b7 答疑补遗附件 \u00b7 工程量清单.pdf</div></div>')
+    L.append(f'<div class="subtitle">数据来源：{src}</div></div>')
 
     # Stats
     L.append('<div class="stats-grid">')
-    L.append(f'<div class="stat-card"><div class="stat-label">中标金额</div><div class="stat-value gold">{fmt_money(bp)}</div><div class="stat-note">施工总承包</div></div>')
-    L.append(f'<div class="stat-card"><div class="stat-label">最高限价</div><div class="stat-value red">{fmt_money(cp)}</div><div class="stat-note">招标控制价</div></div>')
-    L.append(f'<div class="stat-card"><div class="stat-label">下浮比例</div><div class="stat-value green">{disc if disc is not None else em}</div><div class="stat-note">较最高限价下浮</div></div>')
-    L.append(f'<div class="stat-card"><div class="stat-label">防水卷材总面积</div><div class="stat-value blue">{total_mem_qty:,.2f}</div><div class="stat-note">m\u00b2</div></div>')
+    if has_bid:
+        L.append(f'<div class="stat-card"><div class="stat-label">中标金额</div><div class="stat-value gold">{fmt_money(bp)}</div><div class="stat-note">施工总承包</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">最高限价</div><div class="stat-value red">{fmt_money(cp)}</div><div class="stat-note">招标控制价</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">下浮比例</div><div class="stat-value green">{disc if disc is not None else em}%</div><div class="stat-note">较最高限价下浮</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">防水卷材总面积</div><div class="stat-value blue">{total_mem_qty:,.2f}</div><div class="stat-note">m\u00b2</div></div>')
+    else:
+        total_qty_all = sum(it['quantity'] for it in items)
+        n_kinds = len(set(it['name'] for it in items))
+        total_ct_qty = sum(it['quantity'] for it in coatings)
+        L.append(f'<div class="stat-card"><div class="stat-label">防水总面积</div><div class="stat-value blue">{total_qty_all:,.2f}</div><div class="stat-note">m\u00b2</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">材料种类</div><div class="stat-value gold">{n_kinds}</div><div class="stat-note">去重后</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">卷材面积</div><div class="stat-value blue">{total_mem_qty:,.2f}</div><div class="stat-note">m\u00b2</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">涂料面积</div><div class="stat-value" style="color:#d97706">{total_ct_qty:,.2f}</div><div class="stat-note">m\u00b2</div></div>')
     L.append('</div>')
 
     # Project info
     if pn or bu or cu:
         L.append('<div class="section-card"><div class="section-header"><div class="icon cyan">\U0001f4cc</div><h2>项目基本信息</h2></div><div class="section-body"><div class="info-grid">')
         L.append(f'<div class="info-label">项目名称</div><div class="info-value">{pn}</div>')
+        if winner: L.append(f'<div class="info-label">{winner_label}</div><div class="info-value">{winner}</div>')
         if bp: L.append(f'<div class="info-label">中标金额</div><div class="info-value">{fmt_money(bp)}</div>')
         if cp: L.append(f'<div class="info-label">最高限价</div><div class="info-value">{fmt_money(cp)}</div>')
         if disc is not None: L.append(f'<div class="info-label">下浮比例</div><div class="info-value">{disc}%</div>')
@@ -162,34 +270,109 @@ def generate_html(data):
         L.append('</div></div></div>')
 
     # Tables
-    L.append(render_item_table('防水卷材', '\U0001f504', 'blue', membranes, '防水卷材'))
-    L.append(render_item_table('防水涂料', '\U0001f6e2\ufe0f', 'amber', coatings, '防水涂料'))
-    L.append(render_item_table('防水砂浆', '\U0001f9f1', 'green', mortars, '防水砂浆'))
+    L.append(render_item_table('防水卷材', '\U0001f504', 'blue', membranes, '防水卷材', disc, has_price))
+    L.append(render_item_table('防水涂料', '\U0001f6e2\ufe0f', 'amber', coatings, '防水涂料', disc, has_price))
+    L.append(render_item_table('防水砂浆', '\U0001f9f1', 'green', mortars, '防水砂浆', disc, has_price))
     if others:
-        L.append(render_item_table('其他防水材料', '\U0001f4cb', 'rose', others, '其他'))
+        L.append(render_item_table('其他防水材料', '\U0001f4cb', 'rose', others, '其他', disc, has_price))
 
+    # Fallback: show type_totals when items is empty
+    if not items:
+        tt_labels = []
+        for tt, tv in type_totals.items():
+            if tv.get('count', 0) > 0:
+                tt_labels.append(f'{tv["count"]}种{tt}')
+        if tt_labels:
+            L.append('<div class="section-card"><div class="section-header"><div class="icon purple">📊</div><h2>防水材料分类汇总</h2></div><div class="section-body">')
+            L.append('<div style="padding:12px 0;line-height:1.8;color:#64748b;font-size:13px;">')
+            L.append('<p style="margin-bottom:10px">📋 本项目的工程量清单PDF已识别出防水类别信息，但暂未提取详细条目数据。</p>')
+            L.append('<div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px">')
+            for tt, tv in type_totals.items():
+                if tv.get('count', 0) > 0:
+                    cls = {'防水卷材':'blue','防水涂料':'amber','防水砂浆':'green','其他防水':'rose'}.get(tt, 'gray')
+                    L.append(f'<span style="display:inline-block;padding:6px 14px;background:#f8fafc;border-radius:8px;font-size:13px;color:#1a2332"><strong>{tt}</strong>：{tv["count"]}项</span>')
+            L.append('</div>')
+            L.append(f'<p>防水部分总造价约 <strong>¥{gt:,.2f}</strong></p>')
+            if bp: L.append(f'<p>占中标金额约 <strong>{gt/bp*100:.2f}%</strong></p>')
+            L.append('</div></div></div>')
+        elif type_totals and all(tv.get('count',0)==0 for tv in type_totals.values()):
+            # Show basic grand total card
+            L.append('<div class="section-card"><div class="section-header"><div class="icon purple">📊</div><h2>防水材料概况</h2></div><div class="section-body">')
+            L.append(f'<div style="padding:12px 0;line-height:1.8;font-size:14px;text-align:center;color:#94a3b8">')
+            L.append('<p>📋 本项目防水部分总造价约 <strong style="color:#b8860b">¥{gt:,.2f}</strong></p>'.format(gt=gt))
+            if bp: L.append(f'<p style="margin-top:4px">占中标金额约 <strong>{gt/bp*100:.2f}%</strong></p>')
+            L.append('</div></div></div>')
     # Summary
+    _sum_qty = sum(it['quantity'] for it in items)
     if items:
-        L.append('<div class="section-card"><div class="section-header"><div class="icon purple">\U0001f4ca</div><h2>防水材料综合汇总</h2></div><div class="section-body" style="padding-bottom:4px;"><table><thead><tr><th>材料大类</th><th>材料名称</th><th class="num">工程量</th><th class="num">综合单价(元)</th><th class="num">合价(元)</th><th class="num">占比</th></tr></thead><tbody>')
+        has_adj = has_price and disc is not None and disc > 0
+        _hdr = '<div class="section-card"><div class="section-header"><div class="icon purple">\U0001f4ca</div><h2>防水材料综合汇总</h2></div><div class="section-body" style="padding-bottom:4px;"><table><thead><tr><th>材料大类</th><th>材料名称</th><th class="num">工程量</th>'
+        if has_adj:
+            L.append(_hdr + '<th class="num">综合单价(元)</th><th class="num">下浮后单价(元)</th><th class="num">合价(元)</th><th class="num">下浮后合价(元)</th><th class="num">占比</th></tr></thead><tbody>')
+        elif has_price:
+            L.append(_hdr + '<th class="num">综合单价(元)</th><th class="num">合价(元)</th><th class="num">占比</th></tr></thead><tbody>')
+        else:
+            L.append(_hdr + '<th class="num">占比</th></tr></thead><tbody>')
         for it in items:
             tl = {'防水卷材':'卷材','防水涂料':'涂料','防水砂浆':'砂浆','其他防水':'其他'}.get(it['type'],'')
-            L.append(f'<tr><td style="font-weight:600;">{it["type"]}</td><td>{tl} {it["name"][:35]}</td><td class="num">{it["quantity"]:,.2f} {it["unit"]}</td><td class="num">{it["unit_price"]:.2f}</td><td class="num" style="font-weight:600;">{it["total_price"]:,.2f}</td><td class="num">{fmt_pct(it["total_price"], gt)}</td></tr>')
-        L.append(f'<tr style="background:#f8fafc;font-weight:700;"><td colspan="4" style="text-align:right;">防水部分合计</td><td class="num" style="color:#b8860b;">{gt:,.2f}</td><td class="num">100%</td></tr>')
-        if bp: L.append(f'<tr style="background:#f0fdf4;"><td colspan="4" style="text-align:right;color:#166534;">占中标金额比例</td><td class="num" style="color:#16a34a;font-weight:700;">{fmt_pct(gt, bp)}</td><td class="num" style="color:#16a34a;">\u2014</td></tr>')
-        if cp: L.append(f'<tr style="background:#fef2f2;"><td colspan="4" style="text-align:right;color:#991b1b;">占最高限价比例</td><td class="num" style="color:#dc2626;font-weight:700;">{fmt_pct(gt, cp)}</td><td class="num" style="color:#dc2626;">\u2014</td></tr>')
+            _itunit = it.get('unit', 'm\u00b2')
+            _base = f'<tr><td style="font-weight:600;">{it["type"]}</td><td>{tl} {it["name"][:35]}</td><td class="num">{it["quantity"]:,.2f} {_itunit}</td>'
+            if has_adj:
+                adj_up = it['unit_price'] * (1 - disc/100)
+                adj_tp = it['total_price'] * (1 - disc/100)
+                L.append(_base + f'<td class="num">{it["unit_price"]:.2f}</td><td class="num">{adj_up:.2f}</td><td class="num" style="font-weight:600;">{it["total_price"]:,.2f}</td><td class="num">{adj_tp:,.2f}</td><td class="num">{fmt_pct(it["total_price"], gt)}</td></tr>')
+            elif has_price:
+                L.append(_base + f'<td class="num">{it["unit_price"]:.2f}</td><td class="num" style="font-weight:600;">{it["total_price"]:,.2f}</td><td class="num">{fmt_pct(it["total_price"], gt)}</td></tr>')
+            else:
+                L.append(_base + f'<td class="num">{fmt_pct(it["quantity"], _sum_qty)}</td></tr>')
+        if has_adj:
+            adj_gt = gt * (1 - disc/100)
+            L.append(f'<tr style="background:#f8fafc;font-weight:700;"><td colspan="4" style="text-align:right;">防水部分合计</td><td class="num" style="color:#b8860b;">{gt:,.2f}</td><td class="num" style="color:#b8860b;">{adj_gt:,.2f}</td><td class="num">100%</td></tr>')
+        elif has_price:
+            L.append(f'<tr style="background:#f8fafc;font-weight:700;"><td colspan="4" style="text-align:right;">防水部分合计</td><td class="num" style="color:#b8860b;">{gt:,.2f}</td><td class="num">100%</td></tr>')
+        else:
+            L.append(f'<tr style="background:#f8fafc;font-weight:700;"><td colspan="2" style="text-align:right;">面积合计</td><td class="num" style="color:#2563eb;">{_sum_qty:,.2f}</td><td class="num">100%</td></tr>')
+        if has_adj:
+            if bp: L.append(f'<tr style="background:#f0fdf4;"><td colspan="4" style="text-align:right;color:#166534;">占中标金额比例</td><td class="num" style="color:#16a34a;font-weight:700;">{fmt_pct(gt, bp)}</td><td class="num" style="color:#16a34a;">—</td><td class="num" style="color:#16a34a;">—</td></tr>')
+            if cp: L.append(f'<tr style="background:#fef2f2;"><td colspan="4" style="text-align:right;color:#991b1b;">占最高限价比例</td><td class="num" style="color:#dc2626;font-weight:700;">{fmt_pct(gt, cp)}</td><td class="num" style="color:#dc2626;">—</td><td class="num" style="color:#dc2626;">—</td></tr>')
+        elif has_price:
+            if bp: L.append(f'<tr style="background:#f0fdf4;"><td colspan="4" style="text-align:right;color:#166534;">占中标金额比例</td><td class="num" style="color:#16a34a;font-weight:700;">{fmt_pct(gt, bp)}</td><td class="num" style="color:#16a34a;">—</td></tr>')
+            if cp: L.append(f'<tr style="background:#fef2f2;"><td colspan="4" style="text-align:right;color:#991b1b;">占最高限价比例</td><td class="num" style="color:#dc2626;font-weight:700;">{fmt_pct(gt, cp)}</td><td class="num" style="color:#dc2626;">—</td></tr>')
         L.append('</tbody></table></div></div>')
-
     # Summary box
-    L.append(f'<div class="summary-box"><strong>\U0001f4cc 防水体系概览：</strong>本项目防水材料共提取到 <strong>{len(items)}</strong> 项可量化条目，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项、防水砂浆 <strong>{len(mortars)}</strong> 项。防水部分总造价约 <strong>\u00a5{gt:,.2f}</strong>。')
-    if bp: L.append(f'占中标金额约 <strong>{fmt_pct(gt, bp)}</strong>。')
+    # Compute type_totals counts for fallback when items empty
+    tt_total_count = sum(tv.get('count',0) for tv in type_totals.values())
+    tt_mem_count = type_totals.get('防水卷材',{}).get('count',0)
+    tt_ct_count = type_totals.get('防水涂料',{}).get('count',0)
+    tt_mort_count = type_totals.get('防水砂浆',{}).get('count',0)
+    _n_show = len(items) if items else tt_total_count
+    _merged_note = ''
+    if data.get('merge_by_name') and items:
+        _raw = sum(it.get('_merged_n', 1) for it in items)
+        if _raw > len(items):
+            _merged_note = f'（原始清单 {_raw} 条，同名材料已合并）'
+    _prefix = f'<div class="summary-box"><strong>\U0001f4cc 防水体系概览：</strong>本项目防水材料共提取到 <strong>{_n_show}</strong> 项{_merged_note}，其中防水卷材 <strong>{len(membranes) if items else tt_mem_count}</strong> 项、防水涂料 <strong>{len(coatings) if items else tt_ct_count}</strong> 项、防水砂浆 <strong>{len(mortars) if items else tt_mort_count}</strong> 项。'
+    L.append(_prefix)
+    if has_price:
+        L.append(f'防水部分总造价约 <strong>\u00a5{gt:,.2f}</strong>。')
+        if bp:     L.append(f'占中标金额约 <strong>{fmt_pct(gt, bp)}</strong>。')
+        if disc is not None:
+            adj_gt = gt * (1 - disc/100)
+            L.append(f'下浮后防水总价约 <strong>¥{adj_gt:,.2f}</strong>（下浮{disc:.2f}%）。')
+    else:
+        L.append(f'防水总面积约 <strong>{_sum_qty:,.2f} m\u00b2</strong>。本清单未含综合单价，故只列工程量。')
     L.append('</div>')
 
     # Footer
     L.append('<footer>')
-    L.append('<p>数据来源：<a href="https://www.cqggzy.com" target="_blank">重庆市公共资源交易网（cqggzy.com）</a></p>')
+    if data.get('data_source'):
+        L.append(f'<p>数据来源：{src}</p>')
+    else:
+        L.append('<p>数据来源：<a href="https://www.cqggzy.com" target="_blank">重庆市公共资源交易网（cqggzy.com）</a></p>')
     if bu: L.append(f'<p>中标结果公告：<a href="{bu}" target="_blank">查看原文</a></p>')
     if cu: L.append(f'<p>答疑补遗：<a href="{cu}" target="_blank">查看原文</a></p>')
-    L.append(f'<p style="margin-top:4px;">本报告由工程量清单PDF自动解析生成 \u00b7 数据抓取日期：{td} \u00b7 仅供参考</p>')
+    _src_note = 'Excel 工程量清单自动解析生成' if data.get('data_source') else '工程量清单PDF自动解析生成'
+    L.append(f'<p style="margin-top:4px;">本报告由{_src_note} \u00b7 数据抓取日期：{td} \u00b7 仅供参考</p>')
     L.append('</footer></div></body></html>')
 
     return '\n'.join(L)
@@ -198,14 +381,25 @@ def generate_html(data):
 def generate_html_mobile(data):
     """Generate iPhone-optimized mobile HTML report."""
     items = data.get('items', [])
+    if data.get('merge_by_name'):
+        items = merge_items_by_name(items)
     gt = data.get('grand_total', 0)
     bp = data.get('bid_price')
     cp = data.get('control_price')
     disc = data.get('discount_ratio')
+    has_price = any((it.get('unit_price') or 0) > 0 for it in items)
+    if not has_price:
+        bp = cp = disc = None
+    # 有没有「招投标信息」（中标金额／最高限价／下浮比例）。
+    # 只有价格、没有中标信息的（如总包下发的分包清单），卡片改显示工程量口径。
+    has_bid = bool(bp or cp or disc is not None)
+    src = data.get('data_source', '重庆市公共资源交易网 \u00b7 工程量清单.pdf')
     em = '—'
     pn = data.get('project_name', '未知项目')
     bu = data.get('bid_url', '')
     cu = data.get('clarify_url', '')
+    winner = data.get('winner') or data.get('top_candidate') or ''
+    winner_label = '中标人' if data.get('winner') else '中标候选人第一名'
     td = date.today().strftime('%Y-%m-%d')
 
     membranes = [it for it in items if it['type'] == '防水卷材']
@@ -224,20 +418,30 @@ def generate_html_mobile(data):
     # Hero
     L.append(f'<div class="hero"><div class="hero-badge">📋 防水材料工程量清单分析</div>')
     L.append(f'<h1>{pn}</h1>')
-    L.append(f'<div class="subtitle">重庆市公共资源交易网 · 工程量清单.pdf</div></div>')
+    L.append(f'<div class="subtitle">{src}</div></div>')
 
     # Stats
     L.append('<div class="stats-grid">')
-    L.append(f'<div class="stat-card"><div class="stat-label">中标金额</div><div class="stat-value gold">{fmt_money(bp)}</div></div>')
-    L.append(f'<div class="stat-card"><div class="stat-label">最高限价</div><div class="stat-value red">{fmt_money(cp)}</div></div>')
-    L.append(f'<div class="stat-card"><div class="stat-label">下浮比例</div><div class="stat-value green">{disc if disc is not None else em}</div></div>')
-    L.append(f'<div class="stat-card"><div class="stat-label">防水材料总价</div><div class="stat-value blue">{gt_label}</div></div>')
+    if has_bid:
+        L.append(f'<div class="stat-card"><div class="stat-label">中标金额</div><div class="stat-value gold">{fmt_money(bp)}</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">最高限价</div><div class="stat-value red">{fmt_money(cp)}</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">下浮比例</div><div class="stat-value green">{disc if disc is not None else em}%</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">防水材料总价</div><div class="stat-value blue">{gt_label}</div></div>')
+    else:
+        _mq = sum(it['quantity'] for it in items)
+        _mk = len(set(it['name'] for it in items))
+        _mc = sum(it['quantity'] for it in coatings)
+        L.append(f'<div class="stat-card"><div class="stat-label">防水总面积</div><div class="stat-value blue">{_mq:,.2f} m\u00b2</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">材料种类</div><div class="stat-value gold">{_mk}</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">卷材面积</div><div class="stat-value blue">{total_mem_qty:,.2f} m\u00b2</div></div>')
+        L.append(f'<div class="stat-card"><div class="stat-label">涂料面积</div><div class="stat-value" style="color:#d97706">{_mc:,.2f} m\u00b2</div></div>')
     L.append('</div>')
 
     # Project info
     if pn or bu or cu:
         L.append('<div class="section-card"><div class="section-header"><div class="icon cyan">📌</div><h2>项目基本信息</h2></div><div class="section-body"><div class="info-grid">')
         L.append(f'<div class="info-label">项目名称</div><div class="info-value">{pn}</div>')
+        if winner: L.append(f'<div class="info-label">{winner_label}</div><div class="info-value">{winner}</div>')
         if bp: L.append(f'<div class="info-label">中标金额</div><div class="info-value">{fmt_money(bp)}</div>')
         if cp: L.append(f'<div class="info-label">最高限价</div><div class="info-value">{fmt_money(cp)}</div>')
         if disc is not None: L.append(f'<div class="info-label">下浮比例</div><div class="info-value">{disc}%</div>')
@@ -246,15 +450,23 @@ def generate_html_mobile(data):
         L.append('</div></div></div>')
 
     # Tables
-    L.append(render_item_table('防水卷材', '🔄', 'blue', membranes, '防水卷材'))
-    L.append(render_item_table('防水涂料', '🛢️', 'amber', coatings, '防水涂料'))
-    L.append(render_item_table('防水砂浆', '🧱', 'green', mortars, '防水砂浆'))
+    L.append(render_item_table('防水卷材', '🔄', 'blue', membranes, '防水卷材', disc, has_price))
+    L.append(render_item_table('防水涂料', '🛢️', 'amber', coatings, '防水涂料', disc, has_price))
+    L.append(render_item_table('防水砂浆', '🧱', 'green', mortars, '防水砂浆', disc, has_price))
     if others:
-        L.append(render_item_table('其他防水材料', '📋', 'rose', others, '其他'))
+        L.append(render_item_table('其他防水材料', '📋', 'rose', others, '其他', disc, has_price))
 
     # Summary box
-    L.append(f'<div class="summary-box"><strong>📌 防水体系概览：</strong>本项目共提取 <strong>{len(items)}</strong> 项，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项、防水砂浆 <strong>{len(mortars)}</strong> 项。防水部分总造价约 <strong>¥{gt:,.2f}</strong>。')
-    if bp: L.append(f'占中标金额约 <strong>{fmt_pct(gt, bp)}</strong>。')
+    _mq2 = sum(it['quantity'] for it in items)
+    if has_price:
+        L.append(f'<div class="summary-box"><strong>📌 防水体系概览：</strong>本项目共提取 <strong>{len(items)}</strong> 项，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项、防水砂浆 <strong>{len(mortars)}</strong> 项。防水部分总造价约 <strong>¥{gt:,.2f}</strong>。')
+        if bp:     L.append(f'占中标金额约 <strong>{fmt_pct(gt, bp)}</strong>。')
+        if disc is not None:
+            adj_gt = gt * (1 - disc/100)
+            L.append(f'下浮后防水总价约 <strong>¥{adj_gt:,.2f}</strong>（下浮{disc:.2f}%）。')
+    else:
+        L.append(f'<div class="summary-box"><strong>📌 防水体系概览：</strong>本项目共提取 <strong>{len(items)}</strong> 项，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项、防水砂浆 <strong>{len(mortars)}</strong> 项。防水总面积约 <strong>{_mq2:,.2f} m\u00b2</strong>。')
+        L.append('本清单未含综合单价，故只列工程量。')
     L.append('</div>')
 
     # Footer
@@ -268,17 +480,229 @@ def generate_html_mobile(data):
     return '\n'.join(L)
 
 
+
+# ── Data warehouse: append project data to waterproof_database.json ──
+DB_PATH = '/Users/xiabing/AI/大禹/waterproof_database.json'
+def save_to_database(data):
+    import os, json
+    import datetime
+    proj = {
+        'project_name': data.get('project_name', ''),
+        'bid_price': data.get('bid_price'),
+        'control_price': data.get('control_price'),
+        'discount_ratio': data.get('discount_ratio'),
+        'grand_total': data.get('grand_total', 0),
+        'type_totals': {
+            '防水卷材': {'count': len([i for i in data.get('items',[]) if i.get('type')=='防水卷材']), 'total_price': sum(i['total_price'] for i in data.get('items',[]) if i.get('type')=='防水卷材')},
+            '防水涂料': {'count': len([i for i in data.get('items',[]) if i.get('type')=='防水涂料']), 'total_price': sum(i['total_price'] for i in data.get('items',[]) if i.get('type')=='防水涂料')},
+            '防水砂浆': {'count': len([i for i in data.get('items',[]) if i.get('type')=='防水砂浆']), 'total_price': sum(i['total_price'] for i in data.get('items',[]) if i.get('type')=='防水砂浆')},
+        },
+        'items': data.get('items', []),
+        'has_detail': True,
+        # 优先使用公示日期，缺省才用生成日期
+        'date': data.get('date') or datetime.date.today().strftime('%Y-%m-%d'),
+        'bid_url': data.get('bid_url'),
+        'clarify_url': data.get('clarify_url'),
+        'winner': data.get('winner'),
+        'top_candidate': data.get('top_candidate'),
+    }
+    # 优先使用传入数据的 district，否则从项目名匹配
+    district_from_data = data.get('district', '')
+    if district_from_data:
+        proj['district'] = district_from_data
+    else:
+        dm = {'潼南':'潼南区','书院坡':'潼南区','国航':'渝北区','武隆':'武隆区','大足':'大足区',
+              '渝中':'渝中区','东港':'南岸区','鱼胡路':'巴南区','大渡口':'大渡口区','铜梁':'铜梁区',
+              '沙坪坝':'沙坪坝区','南岸':'南岸区','巴南':'巴南区','渝北':'渝北区','江北':'江北区',
+              '九龙坡':'九龙坡区','北碚':'北碚区','两江新区':'两江新区','高新区':'高新区'}
+        for k, v in dm.items():
+            if k in proj['project_name']:
+                proj['district'] = v
+                break
+        if not proj['district']:
+            proj['district'] = '其它'
+    db = {'version':1,'created':'2026-07-23','projects':[]}
+    if os.path.exists(DB_PATH):
+        try:
+            with open(DB_PATH, encoding='utf-8') as f:
+                existing = json.load(f)
+                if 'projects' in existing:
+                    db = existing
+        except:
+            pass
+    # 同名项目原地更新，避免重复分析与修正后仪表盘仍显示旧数据
+    replaced = False
+    for idx, old in enumerate(db['projects']):
+        if old.get('project_name') == proj['project_name']:
+            # 保留旧记录里仍有效、新数据未提供的字段
+            for k, v in old.items():
+                if k not in proj or proj.get(k) in (None, '', []):
+                    proj.setdefault(k, v)
+            db['projects'][idx] = proj
+            replaced = True
+            break
+    if not replaced:
+        db['projects'].append(proj)
+    with open(DB_PATH, 'w', encoding='utf-8') as f:
+        json.dump(db, f, ensure_ascii=False, indent=2)
+    print('    [数据仓库] ' + ('已更新' if replaced else '已保存到') + ' ' + DB_PATH)
+
+
+# ── WeChat-friendly report ──
+WECHAT_CSS_STR = (
+    '*{margin:0;padding:0;box-sizing:border-box}'
+    'body{font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei","PingFang SC",sans-serif;background:#f5f7fa;color:#1a2332;padding:0;-webkit-text-size-adjust:100%}'
+    '.container{max-width:600px;margin:0 auto;background:#fff;min-height:100vh}'
+    '.top{background:linear-gradient(135deg,#0a1628,#16213e,#0f3460);padding:28px 20px 20px;color:#fff}'
+    '.top h1{font-size:17px;font-weight:700;line-height:1.5;margin-bottom:6px}'
+    '.top .meta{font-size:12px;color:rgba(255,255,255,0.6)}'
+    '.summary{padding:16px 20px;background:#fff;border-bottom:1px solid #eef2f6}'
+    '.s-row{display:flex;gap:10px;margin-bottom:10px}'
+    '.s-row:last-child{margin-bottom:0}'
+    '.s-item{flex:1;background:#f8fafc;border-radius:10px;padding:10px 12px}'
+    '.s-item .lbl{font-size:10px;color:#94a3b8;letter-spacing:0.3px;margin-bottom:3px}'
+    '.s-item .val{font-size:20px;font-weight:700;color:#0a1628;line-height:1.2}'
+    '.s-item .val.gold{color:#b8860b}.s-item .val.green{color:#16a34a}.s-item .val.blue{color:#2563eb}.s-item .val.red{color:#dc2626}'
+    '.type-row{padding:14px 20px;display:flex;gap:8px;flex-wrap:wrap;border-bottom:8px solid #f5f7fa}'
+    '.type-tag{padding:5px 12px;border-radius:14px;font-size:12px;font-weight:500}'
+    '.type-tag.m{background:#dbeafe;color:#1d4ed8}.type-tag.c{background:#fef3c7;color:#b45309}.type-tag.s{background:#d1fae5;color:#047857}'
+    '.items{padding:0 20px 16px}'
+    '.items h2{font-size:14px;font-weight:600;color:#1a2332;margin:12px 0 8px}'
+    '.item-card{background:#f8fafc;border-radius:8px;padding:10px 12px;margin-bottom:6px}'
+    '.item-card .it-name{font-size:13px;font-weight:500;color:#1a2332;margin-bottom:4px}'
+    '.item-card .it-detail{display:flex;gap:10px;font-size:11px;color:#64748b;flex-wrap:wrap}'
+    '.item-card .it-detail strong{color:#1a2332}'
+    '.footer{padding:16px 20px;text-align:center;font-size:11px;color:#94a3b8;line-height:1.8;border-top:1px solid #eef2f6}'
+    '.footer a{color:#2563eb;text-decoration:none}'
+    '.badge{display:inline-block;background:rgba(255,255,255,0.12);border:1px solid rgba(255,255,255,0.2);color:#93c5fd;font-size:10px;padding:3px 10px;border-radius:12px;margin-bottom:8px;letter-spacing:0.5px}'
+)
+
+def generate_html_wechat(data):
+    import datetime
+    items = data.get('items', [])
+    if data.get('merge_by_name'):
+        items = merge_items_by_name(items)
+    gt = data.get('grand_total', 0)
+    bp = data.get('bid_price')
+    cp = data.get('control_price')
+    disc = data.get('discount_ratio')
+    has_price = any((it.get('unit_price') or 0) > 0 for it in items)
+    if not has_price:
+        bp = cp = disc = None
+    # 有没有「招投标信息」（中标金额／最高限价／下浮比例）。
+    # 只有价格、没有中标信息的（如总包下发的分包清单），卡片改显示工程量口径。
+    has_bid = bool(bp or cp or disc is not None)
+    src = data.get('data_source', '重庆市公共资源交易网')
+    pn = data.get('project_name', '未知项目')
+    winner = data.get('winner') or data.get('top_candidate') or ''
+    winner_label = '中标人' if data.get('winner') else '中标候选人第一名'
+    td = datetime.date.today().strftime('%Y-%m-%d')
+    
+    def fm(n):
+        if n is None: return '—'
+        return '¥{:,.2f}'.format(n)
+    
+    membranes = [it for it in items if it.get('type') == '防水卷材']
+    coatings = [it for it in items if it.get('type') == '防水涂料']
+    mortars = [it for it in items if it.get('type') == '防水砂浆']
+    others = [it for it in items if it.get('type') == '其他防水']
+    
+    L = ['<!DOCTYPE html><html lang="zh-CN"><head>']
+    L.append('<meta charset="UTF-8">')
+    L.append('<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">')
+    L.append(f'<title>{pn} — 防水材料分析</title><style>{WECHAT_CSS_STR}</style></head><body>')
+    L.append('<div class="container">')
+    L.append(f'<div class="top"><div class="badge">🔨 防水材料分析</div>')
+    L.append(f'<h1>{pn}</h1>')
+    L.append(f'<div class="meta">{src} · {td}</div></div>')
+    if winner: L.append(f'<div style="text-align:center;font-size:14px;font-weight:bold;color:#b8860b;background:#fff7e6;border-radius:8px;padding:8px 12px;margin:-4px 14px 12px;">\U0001f3c6 {winner_label}：{winner}</div>')
+    
+    disc_str = f'{disc:.2f}%' if disc is not None else '—'
+    L.append('<div class="summary">')
+    if has_bid:
+        L.append('<div class="s-row">')
+        L.append(f'<div class="s-item"><div class="lbl">中标金额</div><div class="val gold">{fm(bp)}</div></div>')
+        L.append(f'<div class="s-item"><div class="lbl">最高限价</div><div class="val red">{fm(cp)}</div></div>')
+        L.append('</div><div class="s-row">')
+        L.append(f'<div class="s-item"><div class="lbl">下浮比例</div><div class="val green">{disc_str}</div></div>')
+        L.append(f'<div class="s-item"><div class="lbl">防水总价</div><div class="val blue">{fm(gt)}</div></div>')
+        L.append('</div>')
+        if bp and bp > 0:
+            pct = gt/bp*100
+            L.append(f'<div style="text-align:center;font-size:12px;color:#64748b;margin-top:6px">防水占中标金额约 <strong style="color:#16a34a">{pct:.2f}%</strong></div>')
+    else:
+        _wq = sum(it.get('quantity',0) for it in items)
+        _wk = len(set(it.get('name','') for it in items))
+        L.append('<div class="s-row">')
+        L.append(f'<div class="s-item"><div class="lbl">防水总面积</div><div class="val blue">{_wq:,.2f} m\u00b2</div></div>')
+        L.append(f'<div class="s-item"><div class="lbl">材料种类</div><div class="val gold">{_wk}</div></div>')
+        L.append('</div>')
+        if not has_price:
+            L.append('<div style="text-align:center;font-size:12px;color:#64748b;margin-top:6px">本清单未含综合单价，只列工程量</div>')
+    L.append('</div>')
+    
+    L.append('<div class="type-row">')
+    if membranes: L.append(f'<span class="type-tag m">防水卷材 {len(membranes)}项</span>')
+    if coatings: L.append(f'<span class="type-tag c">防水涂料 {len(coatings)}项</span>')
+    if mortars: L.append(f'<span class="type-tag s">防水砂浆 {len(mortars)}项</span>')
+    if others: L.append(f'<span class="type-tag" style="background:#f1f5f9;color:#64748b">其它 {len(others)}项</span>')
+    L.append('</div>')
+    
+    L.append('<div class="items">')
+    for tname, tcls, tlist in [('防水卷材','m',membranes),('防水涂料','c',coatings),('防水砂浆','s',mortars),('其它防水','',others)]:
+        if not tlist: continue
+        L.append(f'<h2>{tname} ({len(tlist)}项)</h2>')
+        for it in tlist:
+            nm = it.get('name','')[:50]
+            qty = it.get('quantity',0)
+            up = it.get('unit_price',0)
+            tp = it.get('total_price',0)
+            loc = it.get('location','') or ''
+            bld = it.get('building','') or ''
+            if bld: loc = f'{bld} · {loc}' if loc else bld
+            L.append('<div class="item-card">')
+            L.append(f'<div class="it-name">{nm}</div>')
+            L.append('<div class="it-detail">')
+            _unit = it.get('unit', 'm\u00b2')
+            if loc: L.append(f'<span><strong>{loc}</strong></span>')
+            L.append(f'<span>量: <strong>{qty:,.2f} {_unit}</strong></span>')
+            if has_price:
+                L.append(f'<span>单价: <strong>¥{up:,.2f}</strong></span>')
+                L.append(f'<span>合计: <strong>¥{tp:,.2f}</strong></span>')
+            L.append('</div>')
+            L.append('</div>')
+    L.append('</div>')
+    
+    L.append(f'<div class="footer">')
+    L.append(f'<p>数据来源：{src}</p>')
+    L.append(f'<p>自动解析 · {td}</p>')
+    L.append('</div></div></body></html>')
+    
+    return '\n'.join(L)
+
+
 if __name__ == '__main__':
     import argparse as ap
     parser = ap.ArgumentParser(description='Generate waterproof analysis HTML report')
     parser.add_argument('input_json', help='Input JSON data file')
     parser.add_argument('output_html', nargs='?', help='Output desktop HTML file')
     parser.add_argument('--mobile-output', help='Output iPhone-optimized HTML file')
+    parser.add_argument('--wechat-output', help='Output WeChat-optimized HTML file')
+    parser.add_argument('--save-to-db', action='store_true', help='Append data to shared data warehouse')
+    parser.add_argument('--merge-by-name', action='store_true',
+                        help='把材料名称相同的条目合并成一条，工程量求和')
     args = parser.parse_args()
 
     with open(args.input_json) as f:
         data = json.load(f)
 
+    if args.merge_by_name:
+        data['merge_by_name'] = True
+
+    # Save to data warehouse
+    if args.save_to_db:
+        save_to_database(data)
+    
     # Desktop report
     html = generate_html(data)
     if args.output_html:
@@ -294,3 +718,10 @@ if __name__ == '__main__':
         with open(args.mobile_output, 'w') as f:
             f.write(mobile_html)
         print(f'Mobile report written to {args.mobile_output}')
+    
+    # WeChat report (optional)
+    if args.wechat_output:
+        wechat_html = generate_html_wechat(data)
+        with open(args.wechat_output, 'w') as f:
+            f.write(wechat_html)
+        print(f'WeChat report written to {args.wechat_output}')

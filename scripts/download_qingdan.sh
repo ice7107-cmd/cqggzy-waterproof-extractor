@@ -39,10 +39,10 @@ try_download() {
         return 1
     }
 
-    # Extract attachment GUID and Code
+    # Extract attachment GUID and Code (macOS 兼容：BSD grep 不支持 -oP，用 sed 替代)
     local GUID CODE
-    GUID=$(grep -oP "downloadAttach\('\K[^']+" "$PAGE_FILE" | head -1)
-    CODE=$(grep -oP "downloadAttach\('[^']+','\K[^']+" "$PAGE_FILE" | head -1)
+    GUID=$(sed -n "s/.*downloadAttach('\\([^']*\\).*/\1/p" "$PAGE_FILE" | head -1)
+    CODE=$(sed -n "s/.*downloadAttach('[^']*','\\([^']*\\).*/\1/p" "$PAGE_FILE" | head -1)
 
     if [ -z "$GUID" ]; then
         echo "  No attachment found on $LABEL page"
