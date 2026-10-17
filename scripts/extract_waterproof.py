@@ -59,6 +59,7 @@ _ALWAYS = MATERIAL_RULES.get('always_waterproof') or []
 _NEVER = MATERIAL_RULES.get('never_waterproof') or []
 _ALWAYS_ALT = _alt([p for r in _ALWAYS for p in (r.get('patterns') or [])])
 _NEVER_ALT = _alt([p for r in _NEVER for p in (r.get('patterns') or [])])
+_UNLESS = {r.get('label'): (r.get('unless') or []) for r in _NEVER if r.get('unless')}
 BOUNDARY_RE = re.compile(_ALWAYS_ALT) if _ALWAYS_ALT else None
 EXCLUDE_RE = re.compile(_NEVER_ALT) if _NEVER_ALT else None
 # Excel 分包清单用：厚度规格 + 材料名（不需要写「厚」字）
@@ -89,11 +90,20 @@ def vetoed(text):
     """名称层否决：命中排除清单、且不是边界材料时才否决。
 
     用于拦「聚氨酯金属洁净板」「1:3 水泥砂浆找平层」这类靠单个词混进来的条目。
+    规则里带 unless 的（如「防潮层」只认防水涂料/渗透结晶），文本中出现
+    unless 里的词就不否决。
     """
     if EXCLUDE_RE is None or not text:
         return False
     t = re.sub(r'\s+', '', text)
-    return bool(EXCLUDE_RE.search(t)) and rule_for(t) is None
+    m = EXCLUDE_RE.search(t)
+    if not m or rule_for(t) is not None:
+        return False
+    for r in _NEVER:
+        if any(p and p in m.group(0) for p in (r.get('patterns') or [])):
+            if any(u in t for u in _UNLESS.get(r.get('label'), [])):
+                return False
+    return True
 
 
 def boundary_type(text):
