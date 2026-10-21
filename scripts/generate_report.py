@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Generate waterproof analysis HTML report from JSON data."""
-import json, sys
+import json, re, sys
 from datetime import date
 
 TEMPLATE_CSS = """
@@ -39,6 +39,7 @@ tbody tr:last-child td{border-bottom:none}
 .tag.membrane{background:#dbeafe;color:#1d4ed8}.tag.coating{background:#fef3c7;color:#b45309}.tag.mortar{background:#d1fae5;color:#047857}
 .summary-box{margin-top:18px;padding:14px 18px;background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border-radius:10px;border-left:4px solid #22c55e;font-size:13px;line-height:1.7;color:#1a2332}
 .summary-box strong{color:#15803d}
+.split-note em{color:#94a3b8;font-size:11px;font-style:normal}
 footer{text-align:center;padding:20px;color:#94a3b8;font-size:12px;line-height:1.8}
 footer a{color:#2563eb;text-decoration:none}
 @media(max-width:768px){.stats-grid{grid-template-columns:repeat(2,1fr)}body{padding:16px}.hero{padding:24px 20px}.hero h1{font-size:18px;max-width:100%}.section-body{padding:16px}.section-header{padding:14px 16px}table{font-size:12px}thead th,tbody td{padding:6px 6px}}
@@ -79,6 +80,7 @@ tbody tr:last-child td{border-bottom:none}
 .tag.membrane{background:#dbeafe;color:#1d4ed8}.tag.coating{background:#fef3c7;color:#b45309}.tag.mortar{background:#d1fae5;color:#047857}
 .summary-box{margin-top:12px;padding:10px 14px;background:linear-gradient(135deg,#f0fdf4,#ecfdf5);border-radius:8px;border-left:3px solid #22c55e;font-size:12px;line-height:1.6;color:#1a2332}
 .summary-box strong{color:#15803d}
+.split-note em{color:#94a3b8;font-size:11px;font-style:normal}
 footer{text-align:center;padding:14px;color:#94a3b8;font-size:10px;line-height:1.6}
 footer a{color:#2563eb;text-decoration:none}
 """
@@ -146,6 +148,74 @@ def merge_items_by_name(items, max_parts=3):
     return out
 
 
+_THICK_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(?:mm|㎜|毫米|MM)?\s*厚')
+
+
+def norm_material_name(nm):
+    """厚度写法归一：把「1.5厚」「1.5mm」「1.5mm厚」统一成「1.5mm」。"""
+    return _THICK_RE.sub(lambda m: f'{m.group(1)}mm', nm or '')
+
+
+_LOC_PREFIX_RE = re.compile(r'^(外墙面|内墙面|外墙|内墙|墙面|屋面|楼地面|顶棚|天棚|地面|地下室|卫生间|厨房|阳台)')
+_BUILD_SUFFIX_RE = re.compile(r'(抹灰|找平|找坡|防水层)+$')
+
+
+def norm_material_key(nm):
+    """合并键用的进一步归一：去掉名称里的部位前缀和施工做法后缀。
+
+    「外墙20mm防水砂浆抹灰」→「20mm防水砂浆」，与「20mm防水砂浆」合并；
+    只影响汇总表的归组，展示名仍用 norm_material_name（保留原文措辞）。
+    """
+    s = norm_material_name(nm)
+    s = _LOC_PREFIX_RE.sub('', s)
+    s = _BUILD_SUFFIX_RE.sub('', s)
+    # 括号统一成全角、并把括号内容统一挪到末尾：
+    # 「…防水卷材（TJ）」与「…(TJ)防水卷材」是同一种材料的两种写法，位置不归一就并不到一起。
+    s = s.replace('(', '（').replace(')', '）')
+    # 「（Ⅱ）型」→「（Ⅱ型）」，避免把型号拆成「…JS型（Ⅱ）」
+    s = re.sub(r'（([^（）]*)）型', r'（\1型）', s)
+    parens = re.findall(r'（[^（）]*）', s)
+    if parens:
+        s = re.sub(r'（[^（）]*）', '', s) + ''.join(parens)
+    return s.strip()
+
+
+def summary_rows(items):
+    """汇总表按「材料大类 + 归一化材料名 + 单位」合并求和（2026-10-21 用户口径）。
+
+    材料名称里含厚度规格时，清单原文的写法很不统一：「1.5厚」「1.5mm」「1.5mm厚」
+    指的是同一个厚度，不归一化就会被拆成好几行。这里把厚度统一写成 `<数字>mm`，
+    再按「大类 + 归一化名称 + 单位」求和；不同厚度（1.2mm / 1.5mm）数字不同，
+    不会误合并；不同材料（防水砂浆 vs 聚合物水泥防水砂浆）名称不同，也不合并。
+    分类明细表仍逐条列（保留部位与原文），只有这张汇总表合并。
+    """
+    groups, order = {}, []
+    for it in items:
+        key_name = norm_material_key(it.get('name') or '')
+        k = (it.get('type') or '', key_name, it.get('unit') or '')
+        if k not in groups:
+            groups[k] = {
+                'type': it.get('type') or '',
+                'name': key_name,
+                'unit': it.get('unit') or '',
+                'quantity': 0.0,
+                'total_price': 0.0,
+                'n': 0,
+                'split': False,
+            }
+            order.append(k)
+        g = groups[k]
+        g['quantity'] += it.get('quantity') or 0
+        g['total_price'] += it.get('total_price') or 0
+        g['n'] += 1
+        if it.get('_split_note'):
+            g['split'] = True
+    rows = [groups[k] for k in order]
+    for g in rows:
+        g['unit_price'] = (g['total_price'] / g['quantity']) if g['quantity'] else 0.0
+    return rows
+
+
 def render_item_table(title, icon, icon_cls, items, type_label, discount_ratio=None, has_price=True):
     if not items: return ""
     tag_map = {"防水卷材": "membrane", "防水涂料": "coating", "防水砂浆": "mortar", "其他": "mortar"}
@@ -173,15 +243,21 @@ def render_item_table(title, icon, icon_cls, items, type_label, discount_ratio=N
             qty_display = f"{it['quantity']:,.2f}"
         
         tag_text = "卷材" if type_label=="防水卷材" else "涂料" if type_label=="防水涂料" else "砂浆"
-        
+        # 复合项拆分出来的行：工程量照记，金额显示「—」（钱只计在主材料行，避免重复）
+        _is_split = bool(it.get('_split_note'))
+        _up = '—' if _is_split else f'{it["unit_price"]:.2f}'
+        _tp = '—' if _is_split else f'{it["total_price"]:,.2f}'
+        _nm_attr = ' title="复合清单项拆分而来，金额计入主材料行"' if _is_split else ''
+        _nm_txt = f'<span{_nm_attr}>{nm}</span>' if not _is_split else f'<span class="split-note"{_nm_attr}>{nm} <em>（复合项拆分，金额见主材料行）</em></span>'
+
         if has_adj:
-            adj_up = it["unit_price"] * (1 - discount_ratio / 100)
-            adj_tp = it["total_price"] * (1 - discount_ratio / 100)
-            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {nm}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td><td class="num">{it["unit_price"]:.2f}</td><td class="num">{adj_up:.2f}</td><td class="num">{it["total_price"]:,.2f}</td><td class="num">{adj_tp:,.2f}</td></tr>'
+            _adj_up = '—' if _is_split else f'{it["unit_price"] * (1 - discount_ratio / 100):.2f}'
+            _adj_tp = '—' if _is_split else f'{it["total_price"] * (1 - discount_ratio / 100):,.2f}'
+            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {_nm_txt}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td><td class="num">{_up}</td><td class="num">{_adj_up}</td><td class="num">{_tp}</td><td class="num">{_adj_tp}</td></tr>'
         elif has_price:
-            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {nm}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td><td class="num">{it["unit_price"]:.2f}</td><td class="num">{it["total_price"]:,.2f}</td></tr>'
+            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {_nm_txt}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td><td class="num">{_up}</td><td class="num">{_tp}</td></tr>'
         else:
-            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {nm}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td></tr>'
+            h += f'<tr><td>{idx}</td><td>{loc}</td><td><span class="tag {tag_cls}">{tag_text}</span> {_nm_txt}</td><td>{it.get("unit","m²")}</td><td class="num">{qty_display}</td></tr>'
     
     # Total row
     total_qty = sum(it['quantity'] for it in items)
@@ -198,12 +274,40 @@ def render_item_table(title, icon, icon_cls, items, type_label, discount_ratio=N
     h += '</tbody></table></div></div>'
     return h
 
-def generate_html(data):
-    items = data.get('items', [])
+def prepare_items(data):
+    """统一入口：剔除「其他防水」类 + 合并同名 + 重算合计。
+
+    2026-10-21 用户口径：收集范围只有 卷材／涂料／砂浆 三类，「其他防水」类别已取消。
+    历史数据里仍可能残留该类型（如钢板止水带），报告一律不展示；并按过滤后的条目
+    重算 grand_total 与 type_totals，保证表格行和合计对得上，不出现「行加起来 ≠ 合计」。
+    """
+    items = data.get('items', []) or []
+    drop = [it for it in items if (it.get('type') or '') == '其他防水']
+    if drop:
+        items = [it for it in items if (it.get('type') or '') != '其他防水']
+        print(f'[提示] 报告已剔除 {len(drop)} 条「其他防水」类条目（不在收集范围）：',
+              file=sys.stderr)
+        for it in drop[:10]:
+            print(f"   - {str(it.get('name', ''))[:40]} | "
+                  f"{it.get('quantity')} {it.get('unit', '')} | {it.get('total_price')} 元",
+                  file=sys.stderr)
     if data.get('merge_by_name'):
         items = merge_items_by_name(items)
-    type_totals = data.get('type_totals', {})
-    gt = data.get('grand_total', 0)
+    if items:
+        gt = sum((it.get('total_price') or 0) for it in items)
+        tt = {}
+        for it in items:
+            t = it.get('type') or ''
+            d = tt.setdefault(t, {'count': 0, 'total_qty': 0, 'total_price': 0})
+            d['count'] += 1
+            d['total_qty'] += (it.get('quantity') or 0)
+            d['total_price'] += (it.get('total_price') or 0)
+        return items, gt, tt
+    return items, data.get('grand_total', 0), data.get('type_totals', {})
+
+
+def generate_html(data):
+    items, gt, type_totals = prepare_items(data)
     bp = data.get('bid_price')
     cp = data.get('control_price')
     disc = data.get('discount_ratio')
@@ -313,16 +417,27 @@ def generate_html(data):
             L.append(_hdr + '<th class="num">综合单价(元)</th><th class="num">合价(元)</th><th class="num">占比</th></tr></thead><tbody>')
         else:
             L.append(_hdr + '<th class="num">占比</th></tr></thead><tbody>')
-        for it in items:
+        for it in summary_rows(items):
             tl = {'防水卷材':'卷材','防水涂料':'涂料','防水砂浆':'砂浆','其他防水':'其他'}.get(it['type'],'')
-            _itunit = it.get('unit', 'm\u00b2')
-            _base = f'<tr><td style="font-weight:600;">{it["type"]}</td><td>{tl} {it["name"][:35]}</td><td class="num">{it["quantity"]:,.2f} {_itunit}</td>'
+            _itunit = it.get('unit') or 'm\u00b2'
+            _cnt = (f'<span style="color:#94a3b8;font-size:11px;">（{it["n"]} 条）</span>'
+                    if it.get('n', 1) > 1 else '')
+            _split_row = bool(it.get('split')) and not (it.get('total_price') or 0)
+            if _split_row:
+                _cnt += '<span style="color:#94a3b8;font-size:11px;">（复合项拆分，金额计入主材料行）</span>'
+            _base = f'<tr><td style="font-weight:600;">{it["type"]}</td><td>{tl} {it["name"][:35]}{_cnt}</td><td class="num">{it["quantity"]:,.2f} {_itunit}</td>'
             if has_adj:
-                adj_up = it['unit_price'] * (1 - disc/100)
-                adj_tp = it['total_price'] * (1 - disc/100)
-                L.append(_base + f'<td class="num">{it["unit_price"]:.2f}</td><td class="num">{adj_up:.2f}</td><td class="num" style="font-weight:600;">{it["total_price"]:,.2f}</td><td class="num">{adj_tp:,.2f}</td><td class="num">{fmt_pct(it["total_price"], gt)}</td></tr>')
+                if _split_row:
+                    L.append(_base + '<td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>')
+                else:
+                    adj_up = it['unit_price'] * (1 - disc/100)
+                    adj_tp = it['total_price'] * (1 - disc/100)
+                    L.append(_base + f'<td class="num">{it["unit_price"]:.2f}</td><td class="num">{adj_up:.2f}</td><td class="num" style="font-weight:600;">{it["total_price"]:,.2f}</td><td class="num">{adj_tp:,.2f}</td><td class="num">{fmt_pct(it["total_price"], gt)}</td></tr>')
             elif has_price:
-                L.append(_base + f'<td class="num">{it["unit_price"]:.2f}</td><td class="num" style="font-weight:600;">{it["total_price"]:,.2f}</td><td class="num">{fmt_pct(it["total_price"], gt)}</td></tr>')
+                if _split_row:
+                    L.append(_base + '<td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>')
+                else:
+                    L.append(_base + f'<td class="num">{it["unit_price"]:.2f}</td><td class="num" style="font-weight:600;">{it["total_price"]:,.2f}</td><td class="num">{fmt_pct(it["total_price"], gt)}</td></tr>')
             else:
                 L.append(_base + f'<td class="num">{fmt_pct(it["quantity"], _sum_qty)}</td></tr>')
         if has_adj:
@@ -351,6 +466,15 @@ def generate_html(data):
         _raw = sum(it.get('_merged_n', 1) for it in items)
         if _raw > len(items):
             _merged_note = f'（原始清单 {_raw} 条，同名材料已合并）'
+    if not _merged_note and items:
+        _sr = len(summary_rows(items))
+        if _sr < len(items):
+            _merged_note = f'（汇总表按同种材料合并为 {_sr} 行）'
+    if items:
+        _n_split = sum(1 for it in items if it.get('_split_note'))
+        if _n_split:
+            _merged_note += (f'；其中 {_n_split} 条为复合清单项按材料拆分，'
+                             f'工程量各计一份、金额只计一次')
     _prefix = f'<div class="summary-box"><strong>\U0001f4cc 防水体系概览：</strong>本项目防水材料共提取到 <strong>{_n_show}</strong> 项{_merged_note}，其中防水卷材 <strong>{len(membranes) if items else tt_mem_count}</strong> 项、防水涂料 <strong>{len(coatings) if items else tt_ct_count}</strong> 项、防水砂浆 <strong>{len(mortars) if items else tt_mort_count}</strong> 项。'
     L.append(_prefix)
     if has_price:
@@ -380,10 +504,7 @@ def generate_html(data):
 
 def generate_html_mobile(data):
     """Generate iPhone-optimized mobile HTML report."""
-    items = data.get('items', [])
-    if data.get('merge_by_name'):
-        items = merge_items_by_name(items)
-    gt = data.get('grand_total', 0)
+    items, gt, _tt = prepare_items(data)
     bp = data.get('bid_price')
     cp = data.get('control_price')
     disc = data.get('discount_ratio')
@@ -579,10 +700,7 @@ WECHAT_CSS_STR = (
 
 def generate_html_wechat(data):
     import datetime
-    items = data.get('items', [])
-    if data.get('merge_by_name'):
-        items = merge_items_by_name(items)
-    gt = data.get('grand_total', 0)
+    items, gt, _tt = prepare_items(data)
     bp = data.get('bid_price')
     cp = data.get('control_price')
     disc = data.get('discount_ratio')

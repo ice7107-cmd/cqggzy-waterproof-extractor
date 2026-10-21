@@ -192,16 +192,29 @@ def parse_xlsx(path, verbose=True, sheets=None, only_waterproof=True):
                 if len(parts) == 2:
                     loc, rest = parts[0], parts[1]
             disp = (rest or nm).strip()
-            # 名称里没写材料规格、但特征栏写了的，把规格补进名字
-            if spec and not any(k in disp for k in ew.STRONG_KW):
-                disp = f'{disp}（{spec[:60]}）'
+            # 2026-10-21 用户口径：材料名称只取防水材料本身，构造名进 location（与 PDF 路线一致）
+            material = spec.strip() if spec else disp
+            if not loc:
+                _base = disp
+                if spec:
+                    for _cand in (f'（{spec[:60]}）', f'（{spec}）'):
+                        if _base.endswith(_cand):
+                            _base = _base[:-len(_cand)]
+                            break
+                if _base and _base != material and not any(k in _base for k in ew.STRONG_KW):
+                    loc = _base.strip(' 　:：-—、')
+            # 与 PDF 路线同款：名称无材料词 + 长度单位的附属构件项排除
+            if (not any(k in nm for k in ew.STRONG_KW)) and not ew.rule_for(nm) \
+                    and ew._norm_unit(unit) in ('m', 'km'):
+                continue
             t = ew.classify(nm)
             if t == '其他防水':
                 t = ew.boundary_type(spec or nm) or (ew.classify(spec) if spec else t)
             items.append({
                 'item_no': len(items) + 1,
                 'code': code,
-                'name': disp,
+                'name': material[:120],
+                'item_name': nm[:120],
                 'location': loc,
                 'building': bldg,
                 'unit': ew._norm_unit(unit),
@@ -339,6 +352,9 @@ def parse_fenbao_sheet(ws, verbose=True):
         up = _num(cell('unit_price')) or 0.0
         tp = _num(cell('total_price')) or (round(qty * up, 2) if up else 0.0)
         unit = ew._norm_unit(_s(cell('unit')) or 'm2')
+        # 与 PDF 路线同款：名称无材料词 + 长度单位的附属构件项排除
+        if (not any(k in nm for k in ew.STRONG_KW)) and not ew.rule_for(nm) and unit in ('m', 'km'):
+            continue
         loc = clean_fenbao_location(nm)
         for mat in mats:
             items.append({
@@ -384,15 +400,28 @@ def parse_csv(path, verbose=True, only_waterproof=True):
         spec = ew.feature_spec(feat)
         loc, rest = ew.extract_location(nm)
         disp = (rest or nm).strip()
-        # 名称里没写材料规格、但特征栏写了的，把规格补进名字
-        if spec and not any(k in disp for k in ew.STRONG_KW):
-            disp = f'{disp}（{spec[:60]}）'
+        # 2026-10-21 用户口径：材料名称只取防水材料本身，构造名进 location（与 PDF 路线一致）
+        material = spec.strip() if spec else disp
+        if not loc:
+            _base = disp
+            if spec:
+                for _cand in (f'（{spec[:60]}）', f'（{spec}）'):
+                    if _base.endswith(_cand):
+                        _base = _base[:-len(_cand)]
+                        break
+            if _base and _base != material and not any(k in _base for k in ew.STRONG_KW):
+                loc = _base.strip(' 　:：-—、')
+        _unit = ew._norm_unit(_s(cell('unit')) or 'm2')
+        # 与 PDF 路线同款：名称无材料词 + 长度单位的附属构件项排除
+        if (not any(k in nm for k in ew.STRONG_KW)) and not ew.rule_for(nm) and _unit in ('m', 'km'):
+            continue
         t = ew.classify(nm)
         if t == '其他防水':
             t = ew.boundary_type(spec or nm) or (ew.classify(spec) if spec else t)
         items.append({
-            'item_no': len(items) + 1, 'code': code, 'name': disp,
-            'location': loc, 'building': '', 'unit': ew._norm_unit(_s(cell('unit')) or 'm2'),
+            'item_no': len(items) + 1, 'code': code, 'name': material[:120],
+            'item_name': nm[:120],
+            'location': loc, 'building': '', 'unit': _unit,
             'quantity': round(qty, 2), 'unit_price': round(up, 2), 'total_price': round(tp, 2),
             'type': t, 'page': '', 'feature': feat[:300],
         })

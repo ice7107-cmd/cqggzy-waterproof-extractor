@@ -92,17 +92,31 @@ def vetoed(text):
     用于拦「聚氨酯金属洁净板」「1:3 水泥砂浆找平层」这类靠单个词混进来的条目。
     规则里带 unless 的（如「防潮层」只认防水涂料/渗透结晶），文本中出现
     unless 里的词就不否决。
+
+    例外：带 unless 的排除规则（目前只有「防潮层」）**优先于**边界材料清单。
+    否则 2026-10-21 给 always_waterproof 补上「防水卷材」写法之后，
+    「防水卷材防潮层」会因为 always 优先而被翻成算防水，和用户 2026-10-17
+    确认的「防水卷材防潮层一律不算」直接冲突。
     """
     if EXCLUDE_RE is None or not text:
         return False
     t = re.sub(r'\s+', '', text)
     m = EXCLUDE_RE.search(t)
-    if not m or rule_for(t) is not None:
+    if not m:
         return False
-    for r in _NEVER:
-        if any(p and p in m.group(0) for p in (r.get('patterns') or [])):
-            if any(u in t for u in _UNLESS.get(r.get('label'), [])):
-                return False
+    matched = [r for r in _NEVER
+               if any(p and p in m.group(0) for p in (r.get('patterns') or []))]
+    # 1) unless 型规则先裁决：只有 unless 词出现才放行
+    for r in matched:
+        if r.get('unless'):
+            return not any(u in t for u in (r.get('unless') or []))
+    # 2) 边界材料优先：命中 always 就不否决
+    if rule_for(t) is not None:
+        return False
+    # 3) 其余排除规则：unless 词出现则不否决
+    for r in matched:
+        if any(u in t for u in _UNLESS.get(r.get('label'), [])):
+            return False
     return True
 
 
@@ -155,6 +169,14 @@ def extract_location(nm):
                 loc = kw
                 nm = nm[len(kw):]
                 break
+        # 「地下室底板：1.2mm厚…」这类「部位：材料」写法，冒号后确实有材料才切开
+        if not loc and ('：' in nm or ':' in nm):
+            head, _, tail = nm.partition('：') if '：' in nm else nm.partition(':')
+            if tail and (classify(tail) != '其他防水' or rule_for(tail)
+                         or any(k in tail for k in STRONG_KW)):
+                loc, nm = head.strip(), tail
+    # 剥掉部位后残留的分隔符（「内墙面：1.5mm厚…」→「1.5mm厚…」）
+    nm = nm.lstrip('：: -—、·,，')
     return loc, nm
 
 
@@ -255,6 +277,16 @@ def make_item(seq, code, name, unit, qty, unit_price, total_price, page, kw=None
     if (not any(k in name for k in (kw if kw is not None else STRONG_KW))
             and not spec and not name_rule):
         return None
+    # 2026-10-21 用户口径：**附属构件项按长度计量的直接排除**。
+    # 判据：名称本身没有防水材料词（只靠项目特征补入）+ 计量单位是长度类（m/km）。
+    # 理由：这类清单项主体是构件（排水沟、截水沟、变形缝…），防水只是其中一道工序，
+    # 综合单价含盖板/砌体/垫层/混凝土，不能当防水单价；工程量是长度，也不是防水面积。
+    # 案例：010507003003 车库出入口截水沟（坡底）11.1m @487.31，特征含
+    #      「4.防水:1.2厚PV100高分子自粘胶膜防水卷材」——材料真实，但整条金额不能算防水。
+    # 名称里本来就写了材料的（如「电梯挡墙外侧防水」按 m² 计）不受影响。
+    if (not any(k in name for k in (kw if kw is not None else STRONG_KW))
+            and not name_rule and _norm_unit(unit) in ('m', 'km')):
+        return None
     is_strong = any(k in name for k in strong_kw) or bool(spec) or bool(name_rule)
     if not qty or qty <= 0:
         return None
@@ -272,6 +304,28 @@ def make_item(seq, code, name, unit, qty, unit_price, total_price, page, kw=None
     # 名称里没写材料规格时，把特征栏的规格补进名字，报告上才看得出是什么材料
     if spec and not any(k in nm for k in strong_kw):
         nm = f'{nm}（{spec[:60]}）'
+    # 2026-10-21 用户口径：**材料名称只取防水材料本身，不带清单项的构造名**。
+    # 例：清单项「室外砼雨棚板、风井板顶、烟道出屋面板（屋面三）（聚合物水泥防水涂料JS（Ⅱ）型）」
+    #     → material =「聚合物水泥防水涂料JS（Ⅱ）型」，构造名进 location。
+    # 取值优先级：项目特征抽出的材料写法（spec）＞ 名称剥掉部位后的部分（nm）。
+    item_name = re.sub(r'\s+', '', name)
+    material = with_thickness(spec.strip() if spec else nm, feat)
+    # 构造名（部位）：优先用名称前缀抽出的部位；否则取「清单项名去掉（材料）括号」的剩余部分。
+    # 注意：剩余部分若本身含材料词（如「1.5mm厚JS（Ⅱ）聚合物水泥防水涂料（立面）」），
+    # 说明这条名称本来就是材料名，不能整体当部位；改从尾部括号取「立面／平面（楼地面）」。
+    base = nm
+    if spec:
+        for cand in (f'（{spec[:60]}）', f'（{spec}）'):
+            if base.endswith(cand):
+                base = base[:-len(cand)]
+                break
+    if not loc and base and base != material and not any(k in base for k in strong_kw):
+        loc = base.strip(' 　:：-—、')
+    if not loc:
+        m_loc = re.search(r'[（(]([^（）()]{1,10})[）)]$', nm)
+        if m_loc and any(k in m_loc.group(1) for k in
+                         ('立面', '平面', '楼地面', '墙面', '屋面', '天棚', '顶棚', '地面', '顶面')):
+            loc = m_loc.group(1)
     type_ = classify(name)
     if type_ == '其他防水':
         # 名称看不出类别时，用边界材料清单 / 特征里的规格定类
@@ -279,7 +333,8 @@ def make_item(seq, code, name, unit, qty, unit_price, total_price, page, kw=None
     return {
         'item_no': seq,
         'code': code or '',
-        'name': nm[:80],
+        'name': material[:120],       # 材料名称（报告/Excel/汇总都用这个）
+        'item_name': item_name[:120],  # 清单项原名，保留可追溯
         'location': loc,
         'unit': _norm_unit(unit),
         'quantity': round(qty, 2),
@@ -290,6 +345,151 @@ def make_item(seq, code, name, unit, qty, unit_price, total_price, page, kw=None
         'feature': (feat or '')[:300],
         '_strong': is_strong,
     }
+
+
+_MAT_FRAG_SEP = re.compile(r'[，,、；;]| \+ ')
+
+# 同种材料的不同写法：JS 防水涂料 = 聚合物水泥防水涂料（2026-10-21 用户确认）。
+# 合并时保留厚度与型号（如「1.5mm厚聚合物水泥防水涂料JS（Ⅱ）型」）。
+_MAT_THICK_RE = re.compile(r'^(\d+(?:\.\d+)?\s*(?:mm|㎜)?\s*厚?)')
+_MAT_GRADE_RE = re.compile(r'((?:JS)?\s*[（(]\s*(?:Ⅰ|Ⅱ|Ⅲ|IV|iv|I{1,3})\s*[）)]\s*型?)\s*$')
+_JS_ALIAS_RE = re.compile(r'JS\s*聚合物水泥(?:基)?防水涂料|JS\s*防水涂料|聚合物水泥基防水涂料')
+
+
+_HAS_TH_RE = re.compile(r'^\s*\d+(?:\.\d+)?\s*(?:mm|㎜|毫米|厚)')
+_WP_CTX_RE = re.compile(r'涂膜|防水层|卷材|防水涂料|防水膜|防水做法|防水构造|防水隔离')
+_TH_SRC_RE = re.compile(r'(\d+(?:\.\d+)?)\s*(?:mm|㎜|毫米)?\s*厚')
+
+
+def feature_thickness(feat):
+    """从项目特征里找防水层的厚度写法（返回如 '1.5mm厚'），找不到返回 ''。
+
+    只在提到 涂膜／防水层／卷材／防水涂料… 的分段里找，避免把 20mm 保护层、
+    找坡层厚度当成防水层厚度。
+    """
+    if not feat:
+        return ''
+    t = re.sub(r'\s+', '', feat)
+    t = re.split(r'[\[【](?:工作内容|工程内容)[\]】]', t)[0]
+    for seg in re.split(r'(?=\d{1,2}[.．、](?!\d))|[;；]', t):
+        if not _WP_CTX_RE.search(seg):
+            continue
+        m = _TH_SRC_RE.search(seg)
+        if m:
+            return f'{m.group(1)}mm厚'
+    return ''
+
+
+def with_thickness(name, feat):
+    """材料名缺厚度时，用特征里的防水层厚度补齐（2026-10-21 用户口径）。"""
+    if not name or _HAS_TH_RE.match(name):
+        return name
+    th = feature_thickness(feat)
+    return f'{th}{name}' if th else name
+
+
+def _material_parts(name):
+    """拆出 (厚度写法, 材料基名, 型号后缀)，用于判断两条写法是否同一种材料。"""
+    t = name.strip()
+    thick = ''
+    m = _MAT_THICK_RE.match(t)
+    if m:
+        thick = m.group(1).strip()
+        t = t[m.end():]
+    grade = ''
+    g = _MAT_GRADE_RE.search(t)
+    if g:
+        grade = g.group(1).strip()
+        t = t[:g.start()].strip()
+    t = _JS_ALIAS_RE.sub('聚合物水泥防水涂料', t)
+    return thick, t.strip(), grade
+
+
+def _merge_same_material(a, b):
+    """两条写法若基名相同，合成一条并保留厚度/型号；不同则返回 None。"""
+    ta, ca, ga = _material_parts(a)
+    tb, cb, gb = _material_parts(b)
+    if ca != cb or not ca:
+        return None
+    thick = ta or tb
+    if thick and not thick.endswith('厚'):
+        thick += '厚'
+    grade = ga or gb
+    return f'{thick}{ca}{grade}'
+
+
+def split_spec_by_type(spec):
+    """把复合条款里的材料按类型拆开：[('防水涂料', '…'), ('防水卷材', '…')]。
+
+    2026-10-21 用户口径：一个清单项里同时写了涂料和卷材（如「1.5mm厚JS防水涂料，
+    1.5厚分子粘三胎基(TJ)防水卷材，二道 + 聚合物水泥防水涂料JS（Ⅱ）型」），
+    要按材料类型拆成多条，工程量各自记同一份，方便分别归入「防水卷材／防水涂料」。
+    「二道／两遍」这类施工遍数片段是遍数、不是材料名，直接忽略
+    （用户 2026-10-21 指定：材料名只写材料本身，如「1.5厚分子粘三胎基纤维增强型(TJ)防水卷材」）。
+    同类型里若只是同种材料的不同写法（JS 防水涂料 = 聚合物水泥防水涂料），合成一条，
+    保留厚度与型号，如「1.5mm厚聚合物水泥防水涂料JS（Ⅱ）型」。
+    """
+    if not spec:
+        return []
+    groups = []  # [[type, [片段, ...]], ...]，同类型聚合、保持首次出现顺序
+    for raw in _MAT_FRAG_SEP.split(spec):
+        frag = raw.strip(' 　')
+        if not frag:
+            continue
+        if re.fullmatch(r'[一二三四五六七八九十\d]+[道遍]', frag):
+            continue
+        t = boundary_type(frag) or (classify(frag) if classify(frag) != '其他防水' else None)
+        if not t:
+            continue
+        for g in groups:
+            if g[0] == t:
+                g[1].append(frag)
+                break
+        else:
+            groups.append([t, [frag]])
+
+    # 同一大类里的片段：同种材料合并成一条，其余用「 + 」连接
+    out = []
+    for t, frags in groups:
+        merged = []
+        for f in frags:
+            for i, m in enumerate(merged):
+                combined = _merge_same_material(m, f)
+                if combined:
+                    merged[i] = combined
+                    break
+            else:
+                merged.append(f)
+        out.append((t, ' + '.join(merged)))
+    return out
+
+
+def make_items(seq, code, name, unit, qty, unit_price, total_price, page,
+               kw=None, strong=None, feat=None):
+    """复合项拆分后的条目列表（单材料时长度为 1，保持原行为）。
+
+    拆分后：每条工程量相同；金额只算一次（留在第一条主材料行），
+    其余行 unit_price/total_price 置 0 并打 _split_note 标记，
+    报告里这几行金额显示「—」，避免同一笔钱重复计入合计。
+    """
+    base = make_item(seq, code, name, unit, qty, unit_price, total_price, page,
+                     kw=kw, strong=strong, feat=feat)
+    if not base:
+        return []
+    groups = split_spec_by_type(feature_spec(feat)) if feat else []
+    if len(groups) < 2:
+        return [base]
+    out = []
+    for i, (t, mname) in enumerate(groups):
+        it = dict(base)
+        it['name'] = with_thickness(mname, feat)[:120]
+        it['type'] = t
+        if i > 0:
+            it['unit_price'] = 0.0
+            it['total_price'] = 0.0
+            it['_split_note'] = '复合项拆分，金额计入主材料行'
+        out.append(it)
+    return out
 
 
 # ---------- 方案一：PyMuPDF 坐标法 ----------
@@ -433,10 +633,14 @@ def extract_with_fitz(path):
             if feat_parts:
                 name_parts = [t for t in name_parts if t[1] <= feat_left]
             name_parts.sort(key=lambda t: (t[0], t[1]))
-            # 名称列跨多行显示，按 y 间隙聚类，取最接近锚行的那一段
+            # 名称列跨多行显示，按 y 间隙聚类，取最接近锚行的那一段。
+            # 阈值取 12.5 而不是 10：正文行距常在 10.0~10.3 之间浮动（同一页内
+            # 两种都出现过），卡 10 会把被拆到下一行的尾字漏掉——实测
+            # 「电梯挡墙外侧防」+「水」间距 10.2，卡 10 就只收前半段，名称里
+            # 没有「防水」二字，整条被判非防水而静默丢弃。
             clusters, cur, prev = [], [], None
             for t in name_parts:
-                if prev is None or t[0] - prev <= 10:
+                if prev is None or t[0] - prev <= 12.5:
                     cur.append(t)
                 else:
                     clusters.append(cur)
@@ -500,9 +704,8 @@ def extract_with_fitz(path):
                     continue
             else:
                 continue
-            it = make_item(r['seq'], r['code'], r['name'], r['unit'], qty, up, tp, pno + 1,
-                           kw=BROAD_KW, strong=STRONG_KW, feat=r.get('feat'))
-            if it:
+            for it in make_items(r['seq'], r['code'], r['name'], r['unit'], qty, up, tp,
+                                 pno + 1, kw=BROAD_KW, strong=STRONG_KW, feat=r.get('feat')):
                 candidates.append(it)
                 if it['_strong']:
                     items.append(it)
@@ -545,10 +748,8 @@ def extract_with_markitdown(path):
             p = _num(price_str)
             if not q or not p or q <= 0 or p <= 0:
                 continue
-            it = make_item(int(item_no), code, nm, 'm2', q, None, p, 1,
-                           kw=BROAD_KW, strong=STRONG_KW)
-            if it:
-                items.append(it)
+            items.extend(make_items(int(item_no), code, nm, 'm2', q, None, p, 1,
+                                    kw=BROAD_KW, strong=STRONG_KW))
 
     # 去重
     seen, res = set(), []
@@ -583,7 +784,8 @@ def extract(path):
     for it in items:
         it = handle_dao(it)
         k = (it['name'][:30], round(it['quantity'], 1), it.get('page', 0))
-        if k not in seen and it['total_price'] >= 10.0:
+        # 复合项拆分出来的行金额为 0（钱只记在主材料行），不能按「金额过小」过滤掉
+        if k not in seen and (it['total_price'] >= 10.0 or it.get('_split_note')):
             seen.add(k)
             res.append(it)
 
@@ -591,7 +793,7 @@ def extract(path):
     for it in candidates:
         it = handle_dao(it)
         k = (it['name'][:30], round(it['quantity'], 1), it.get('page', 0))
-        if k not in seen2 and it['total_price'] >= 10.0:
+        if k not in seen2 and (it['total_price'] >= 10.0 or it.get('_split_note')):
             seen2.add(k)
             cand.append(it)
     return {'total_pages': total_pages, 'items': res, 'candidates': cand, 'material_prices': []}
