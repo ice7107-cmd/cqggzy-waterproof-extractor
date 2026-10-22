@@ -4,7 +4,7 @@ description: >
   从重庆市公共资源交易网 (cqggzy.com) 的中标候选人公示页面，自动提取中标候选人信息和招标控制价，
   查找对应答疑补遗页面下载工程量清单.pdf，提取防水材料（防水卷材/防水涂料/防水砂浆）数据，
   并生成HTML分析报告。使用 PyMuPDF 坐标法重建清单表格解析（markitdown 兜底）。
-  关键词宽进抓候选 + TypeSafe(Jev) 严出复核，剔除误收、补入漏项。
+  关键词宽进抓候选 + 本地规则/人工复核清单严出；TypeSafe(Jev) 语义复核为可选（区域受限会自动跳过）。
   当用户提供 cqggzy.com 的中标候选人公示 URL 时使用；
   也支持甲方/总包直接给的 Excel/CSV 版工程量清单（走 extract_from_excel.py）。
 ---
@@ -107,14 +107,35 @@ python3 /Users/xiabing/.dsh/skills/cqggzy-waterproof-extractor/scripts/extract_w
 - `--district` 区县、`--date` 公示日期会写入数据仓库，务必填写
 - 脚本优先用 PyMuPDF 坐标法重建表格；若 PDF 无文本（扫描件）会自动回退 markitdown
 - 无综合单价列时，脚本按 合价 ÷ 工程量 自动反推；只有工程量、没有价格的条目会跳过
-- **默认必须加 `--screen`**（见 Step 5.5），否则报告会带进误收项、漏掉倒装写法的条目
+- **默认不加 `--screen`**（见 Step 5.5）；跑完看 stderr 的「人工复核清单」即可
 
-### Step 5.5: TypeSafe 复核候选条目（必做）
+### Step 5.5: 严出复核（本地规则 + 人工清单；TypeSafe 可选）
 
-> ✅ **渗透结晶／聚合物防水涂料／聚合物水泥防水涂料·砂浆** 这几类已在本地直接判定收录
-> （见「判断标准」小节），**不需要**联网复核。TypeSafe 只管这三类之外的边界条目。
+> ⚠️ **2026-10-22 实测：`api.typesafe.ai` 返回 HTTP 451（地区限制），复核接口在本机不可用。**
+> 加 `--screen` 会打印「复核接口全部调用失败…本次跳过复核」，然后降级为关键词匹配，
+> 不中断、不报错；产物与不加 `--screen` 完全一致（同项目实测 11 条 / 443,312.06 一分不差）。
+> 所以 **`--screen` 现在是可选增强，不是必做步骤**。
 
-关键词匹配负责「宽进」（不漏），TypeSafe 负责「严出」（不错收）。加 `--screen` 即可在提取后自动复核：
+严出由三道本地机制承担，都不联网：
+
+1. **规则层**：`material_rules.json` 的 `always_waterproof` / `never_waterproof`（见「判断标准」）
+2. **人工复核清单**：每次运行自动打印，见下
+3. **交叉校验**：`crosscheck_parsers.py`，见 Step 5.6
+
+#### 人工复核清单（现在的主要严出手段）
+
+`extract_waterproof.py` 跑完会在 stderr 打印三类边界条目，出报告前逐条扫一眼：
+
+| 段 | 含义 | 处理 |
+|----|------|------|
+| **A. 待确认候选** | 宽关键词抓到、但没被本地规则收录 | 属实就把写法补进 `material_rules.json` 后重跑 |
+| **B. 仅靠项目特征收录** | 名称里没有材料词，材料名是从特征补的 | 核对材料名/部位取得对不对 |
+| **C. 类别异常「其他防水」** | 该类已取消，正常应为 0 | 出现即规则缺口，补规则 |
+
+实测参考：粮食加工项目（412 页）只报 1 条 —— `脚手架搭拆-消防水`（「消防水」含「防水」子串），
+属噪音，不补规则。
+
+#### 可选：TypeSafe 语义复核（接口可用时）
 
 ```bash
 python3 .../extract_waterproof.py /tmp/qingdan.pdf --screen ... -o /tmp/waterproof_data.json
@@ -126,13 +147,15 @@ python3 .../extract_waterproof.py /tmp/qingdan.pdf --screen ... -o /tmp/waterpro
 3. 概率 ≥ 阈值（默认 0.5）的保留，判否的剔除，被判是但关键词没抓到的**补进** `items`
 4. 汇总（`type_totals`、`grand_total`）自动重算
 
-复核结果写入 JSON 的 `screen` 字段，生成报告前**必须向用户汇报**这三件事：
+**复核成功时**才写 JSON 的 `screen` 字段，生成报告前汇报这三件事：
 
 - `screen.dropped` — 被剔除的误收项（如改性沥青砼层、聚氨酯划线漆、无纺聚氨酯纤维布、防水套管）
 - `screen.added` — 补入的漏项（通常来自倒装写法，如 `20mm厚1:2.5砂浆防水`）
 - `screen.flagged` — 打分在 0.2~0.8 之间「拿不准」的条目，**逐条报给用户确认**
 
-补充参数：
+**复核失败或未启用**：不写 `screen` 字段，改为逐条过「人工复核清单」。
+
+补充参数（仅 `--screen` 时生效）：
 
 | 参数 | 说明 |
 |------|------|
@@ -140,7 +163,7 @@ python3 .../extract_waterproof.py /tmp/qingdan.pdf --screen ... -o /tmp/waterpro
 | `--criteria <path>` | 判定标准文件，默认 `references/waterproof_criteria.json` |
 | `--key-file <path>` | TypeSafe API Key 文件 |
 
-单独复核一个已有的候选清单（或换阈值离线重算，不联网不花钱）：
+单独复核一个已有的候选清单（需要接口可用；换阈值重算不联网）：
 
 ```bash
 # 只复核候选
@@ -174,8 +197,9 @@ python3 .../crosscheck_parsers.py /tmp/qingdan.pdf --json /tmp/waterproof_data.j
 | **数值不一致** | 工程量或单价两线对不上 | 回原页核对，别直接信任一边 |
 | **仅坐标法有** | 多半是 pdfplumber 没认出该页表格 | 人工扫一眼，一般无误 |
 
-它复用的是同一份 `material_rules.json` 与否决清单，两边规则不会打架；不做名称补全、
-不做 TypeSafe 复核，因此**不能替代** Step 5.5。
+它复用的是同一份 `material_rules.json` 与否决清单，两边规则不会打架；只比对集合，
+不做名称补全。它保「召回」（抓解析漏收），**保不了「精度」**（规则层面的误收看不出），
+精度要靠 Step 5.5 的人工复核清单。
 
 > 实测（2026-10-21，412 页粮食仓储项目）：修复前坐标法 6 条 / pdfplumber 11 条，
 > 漏收 5 条真实防水项（TPO 屋面卷材、分子粘卷材×2、PV100 自粘胶膜挡墙、截水沟防水层），
@@ -191,8 +215,8 @@ python3 .../crosscheck_parsers.py /tmp/qingdan.pdf --json /tmp/waterproof_data.j
 ```bash
 python3 /Users/xiabing/.dsh/skills/cqggzy-waterproof-extractor/scripts/extract_from_excel.py "新津-防水.xlsx" \
   --project-name "新津项目" \
-  --screen \
   -o /tmp/waterproof_data.json
+# 接口可用时才加 --screen
 ```
 
 说明：
@@ -299,7 +323,7 @@ python3 /Users/xiabing/AI/大禹/scripts/sync_dashboard.py
 ## 判断标准 / 分类规则
 
 **判断口径**统一放在 `references/waterproof_criteria.json`，改这个文件即可调整标准，不需要改代码。
-`criteria.true` / `criteria.false` 写得越具体，TypeSafe 判得越准（实测：标准写清楚后准确率 97.8% → 99.6%）。
+`criteria.true` / `criteria.false` 写得越具体，TypeSafe（接口可用时）判得越准（实测：标准写清楚后准确率 97.8% → 99.6%）。
 
 ### 已经用户拍板的口径（不要再问，也不要收进报告）
 
@@ -402,7 +426,7 @@ python3 /Users/xiabing/AI/大禹/scripts/sync_dashboard.py
 > - `never_waterproof`：即使出现也排除的写法（抗裂砂浆、水泥砂浆找平层、玻纤网格布…）
 >
 > 改完直接生效，不用改代码；加一条材料只加一个 pattern 即可。
-> 注意 `waterproof_criteria.json` 是给 TypeSafe 看的判断说明，两份文件要保持一致——
+> 注意 `waterproof_criteria.json` 是给 TypeSafe 看的判断说明（接口不可用时作为口径文档），两份文件要保持一致——
 > 先改 `material_rules.json`，再同步标准文件顶部的 `_已确认口径`。
 >
 > 🔍 **改完先跑自测**：`python3 scripts/selftest_rules.py`（11 条口径用例，含「防水卷材防潮层

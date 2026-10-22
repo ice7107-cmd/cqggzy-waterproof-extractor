@@ -799,6 +799,51 @@ def extract(path):
     return {'total_pages': total_pages, 'items': res, 'candidates': cand, 'material_prices': []}
 
 
+def print_manual_review(r, stream=None):
+    """输出「人工复核清单」——没有 TypeSafe 时的严出环节（纯本地，不联网）。
+
+    2026-10-22：api.typesafe.ai 在本机返回 HTTP 451（地区限制），复核会整体跳过，
+    所以把原本由 TypeSafe 承担的「严出」拆成一张人工清单，跑完立刻能看一眼：
+
+    A. 待确认候选：宽关键词抓到、但没被本地强判定收录 → 可能该补收（漏收风险）
+    B. 仅靠项目特征收录：名称里没有材料词，材料名是从特征补的 → 核对名字是否取对
+    C. 类别异常「其他防水」：该类已取消，正常应为 0 → 出现说明规则有缺口
+    """
+    stream = stream or sys.stderr
+    items = r.get('items') or []
+    cands = r.get('candidates') or []
+    item_keys = {(i.get('name', '')[:30], round(i.get('quantity') or 0, 1)) for i in items}
+    pending = [c for c in cands
+               if (c.get('name', '')[:30], round(c.get('quantity') or 0, 1)) not in item_keys]
+    feat_only = [i for i in items
+                 if not any(k in (i.get('name') or '') for k in STRONG_KW)
+                 and not rule_for(i.get('name') or '')]
+    others = [i for i in items if (i.get('type') or '') == '其他防水']
+
+    if not (pending or feat_only or others):
+        print('[复核] 人工确认清单：无边界条目。', file=stream)
+        return
+
+    total = len(pending) + len(feat_only) + len(others)
+    print(f'[复核] 人工确认清单（{total} 条，逐条扫一眼再出报告）：', file=stream)
+    if pending:
+        print(f'  A. 待确认候选 {len(pending)} 条（抓到但未收录，属实就补进 material_rules.json 重跑）：',
+              file=stream)
+        for c in pending[:20]:
+            print(f"     ? {c.get('type', '')} | {str(c.get('name', ''))[:40]} | "
+                  f"{c.get('quantity')} {c.get('unit', '')} | {c.get('total_price')} 元", file=stream)
+    if feat_only:
+        print(f'  B. 仅靠项目特征收录 {len(feat_only)} 条（名称里没有材料词，核对材料名/部位取对没）：',
+              file=stream)
+        for i in feat_only[:20]:
+            print(f"     · {i.get('type', '')} | {str(i.get('name', ''))[:40]} | "
+                  f"部位={str(i.get('location', ''))[:16]}", file=stream)
+    if others:
+        print(f'  C. 类别异常「其他防水」{len(others)} 条（该类已取消，应为 0）：', file=stream)
+        for i in others[:20]:
+            print(f"     ! {str(i.get('name', ''))[:40]} | {i.get('total_price')} 元", file=stream)
+
+
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('pdf_path')
@@ -869,6 +914,9 @@ if __name__ == '__main__':
                     print(f"  ? 待确认 {g['name'][:40]}  {note}", file=sys.stderr)
         else:
             print('[复核] 没有候选条目，跳过。', file=sys.stderr)
+
+    # 无人复核（TypeSafe 不可用/未启用）时的严出环节：列出需要人扫一眼的边界条目
+    print_manual_review(r)
 
     # 清理内部字段，不写入下游 JSON
     for it in r['items']:
