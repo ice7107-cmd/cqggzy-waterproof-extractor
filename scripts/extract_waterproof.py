@@ -232,6 +232,22 @@ def infer_single_price(col, value, qty, page_hint):
     return None
 
 
+def is_demolition(feat):
+    """拆除项判定：特征里的[工作内容]/[工程内容]出现「拆除」即为拆除项。
+
+    典型：原屋面拆除的清单项，项目特征里描述的是**被拆掉的旧屋面做法**
+    （含「防水卷材 PYⅡPE3.0」），实际工作内容是拆除清运，
+    不能当成新做防水收进来。
+    """
+    if not feat:
+        return False
+    f = re.sub(r'\s+', '', feat)
+    for mark in ('[工作内容]', '【工作内容】', '[工程内容]', '【工程内容】'):
+        if mark in f:
+            return '拆除' in f.split(mark, 1)[1]
+    return False
+
+
 def feature_spec(feat):
     """从「项目特征」里抽出含边界材料的短句，拼成 'A + B'，用于补全材料名。
 
@@ -272,6 +288,10 @@ def make_item(seq, code, name, unit, qty, unit_price, total_price, page, kw=None
     strong_kw = STRONG_KW if strong is None else strong
     spec = feature_spec(feat)
     name_rule = rule_for(name)   # 名称本身命中边界材料清单
+    # 拆除项：特征描述的是被拆掉的旧做法，材料词不可信。
+    # 名称自己带材料词时仍按名称判（如「屋面防水拆除重做」），否则丢掉特征规格。
+    if spec and is_demolition(feat) and not any(k in name for k in strong_kw):
+        spec = ''
     # 名称命中关键词、或名称/特征命中边界材料清单，才进入候选；
     # 很多清单的名称只有一句「消防水池楼板整治」，材料写在特征栏里。
     if (not any(k in name for k in (kw if kw is not None else STRONG_KW))

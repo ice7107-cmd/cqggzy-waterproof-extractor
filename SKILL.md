@@ -248,18 +248,23 @@ markitdown /tmp/qingdan.pdf > /tmp/qingdan.md
 
 ### Step 6: 生成 HTML 报告 + 数据仓库
 
-> 📁 **输出目录约定**：所有 HTML 报告（桌面版/移动版/微信版）统一输出到 `/Users/xiabing/AI/大禹/html/` 文件夹，仪表盘 `waterproof_dashboard.html` 也在其中。
+> 📁 **输出目录约定**：报告统一输出到 `/Users/xiabing/AI/大禹/html/`，仪表盘 `waterproof_dashboard.html` 也在其中。
 
+> 📱 **产物约定（2026-10-24 用户确认）**：**电脑版只出 HTML，手机版只出 PDF**。
+> 移动版 HTML、微信版 HTML、长图**都不再生成**——微信不预览 `.html`，转发出去打不开，
+> 手机端一律用 PDF（微信内可直接预览、放大、转发）。
 
 ```bash
-# 桌面版 + 移动版 + 微信分享版 + 保存到数据仓库
+# 桌面 HTML + 手机 PDF + 写入数据仓库
 python3 /Users/xiabing/.dsh/skills/cqggzy-waterproof-extractor/scripts/generate_report.py /tmp/waterproof_data.json \
   "/Users/xiabing/AI/大禹/html/项目名称_防水材料分析报告.html" \
-  --mobile-output "/Users/xiabing/AI/大禹/html/项目名称_防水材料分析报告_移动版.html" \
-  --wechat-output "/Users/xiabing/AI/大禹/html/项目名称_防水材料分析报告_微信版.html" \
+  --pdf "/Users/xiabing/AI/大禹/html/项目名称_防水材料分析报告.pdf" \
   --save-to-db
 ```
-- `--wechat-output`: 生成适合微信分享的轻量版报告（大字、无横向滚动、卡片式布局）
+- `--pdf`: 用 Chrome/Edge/Chromium 无头打印成 A4 PDF（保留渐变与配色）。
+  **依赖本机有 Chromium 内核浏览器**；找不到会打印警告并跳过，不中断流程
+  （可用 `CHROME_PATH` 环境变量指定）。
+- `--mobile-output` / `--wechat-output`: **已弃用**，仅为旧脚本兼容保留，不要再用于新流程。
 - **中标人字段**：JSON 中加 `winner`（中标人）或 `top_candidate`（中标候选人第一名），报告会在「项目名称」和「中标金额」之间显示该行；有 `winner` 时标签为「中标人」，否则为「中标候选人第一名」。
 - `--save-to-db`: 将项目数据写入 `/Users/xiabing/AI/大禹/waterproof_database.json` 数据仓库。**同名项目（如先按候选人公示分析、后拿到中标结果公示）会原地更新该条目**，不会重复添加、也不会被跳过，因此重跑即可刷新金额/中标人/下浮比例。
 
@@ -504,12 +509,13 @@ python3 /Users/xiabing/AI/大禹/scripts/sync_dashboard.py
 - 表格：表头 `#f8fafc` 背景，悬停 `#f8fafc`，底部双线边框
 - 无下浮比例时（`discount_ratio` 为 `None`），**完全隐藏**"下浮后单价"和"下浮后合价"列
 
-### 移动版报告
-- 使用 `--mobile-output` 参数生成，专为手机优化
-- 卡片自适应宽度，无水平滚动
+### 手机版（PDF）
+- 用 `--pdf` 参数生成，由桌面 HTML 无头打印，A4 版式
+- 微信可直接预览、放大、转发；`.html` 在微信里打不开，所以手机端不要发 HTML
+- 打印时强制 `print-color-adjust:exact`，保证渐变、标签底色不被浏览器打印优化掉
 
-### 微信分享版报告
-- 使用 `--wechat-output` 参数生成
-- 大字、无横向滚动、卡片式布局，适合微信内浏览
+### 已弃用
+- `--mobile-output`（移动版 HTML）、`--wechat-output`（微信版 HTML）：2026-10-24 起不再使用，
+  参数仍可用但会打印弃用警告。长图同样不再生成。
 
 > ⚠️ 禁止手写 HTML 报告模板，始终使用 `generate_report.py` 生成。

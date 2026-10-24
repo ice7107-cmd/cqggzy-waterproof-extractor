@@ -136,6 +136,9 @@ def is_waterproof_row(name, feature=''):
         return False   # 洁净板／1:3 普通砂浆找平层／划线漆… 名称层就排除
     if ew.classify(nm) != '其他防水' or ew.rule_for(nm):
         return True
+    # 拆除项：特征写的是被拆掉的旧做法，不能靠特征收录
+    if ew.is_demolition(_s(feature)):
+        return False
     # 材料只写在「项目特征」里的行（如「消防水池楼板整治」+「1.5mm水泥基渗透结晶」）
     return bool(ew.feature_spec(_s(feature)))
 

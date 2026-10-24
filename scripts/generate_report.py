@@ -1,7 +1,65 @@
 #!/usr/bin/env python3
-"""Generate waterproof analysis HTML report from JSON data."""
-import json, re, sys
+"""Generate waterproof analysis HTML report from JSON data.
+
+产出约定（2026-10-24 用户确认）：
+  - 电脑版：桌面 HTML（output_html）
+  - 手机版：PDF（--pdf），微信可直接预览转发
+  - 移动版 / 微信版 HTML 已弃用，只保留旧参数做兼容，流程里不再使用
+"""
+import json, os, re, shutil, subprocess, sys, tempfile
 from datetime import date
+
+
+def find_chrome():
+    """找一个能无头打印 PDF 的 Chromium 内核浏览器。"""
+    for p in (os.environ.get('CHROME_PATH'),
+              '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+              '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+              '/Applications/Chromium.app/Contents/MacOS/Chromium'):
+        if p and os.path.exists(p):
+            return p
+    for name in ('google-chrome', 'chromium', 'chromium-browser', 'chrome'):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
+def html_to_pdf(html_path, pdf_path, timeout=180):
+    """把已生成的桌面 HTML 打成 PDF（A4，保留配色与渐变）。
+
+    微信不预览 .html，手机端只能收 PDF；手机版就用这个函数产出。
+    """
+    chrome = find_chrome()
+    if chrome is None:
+        print('⚠️  没找到 Chrome/Edge/Chromium，跳过 PDF（可用 CHROME_PATH 指定）',
+              file=sys.stderr)
+        return False
+    src = open(html_path, encoding='utf-8').read()
+    # 浏览器打印默认丢背景色/渐变，这里强制按屏幕样式打印
+    css = ('<style>@media print{*{-webkit-print-color-adjust:exact!important;'
+           'print-color-adjust:exact!important}@page{size:A4;margin:8mm}'
+           'body{background:#f0f2f5}}</style>')
+    src = src.replace('</head>', css + '</head>', 1) if '</head>' in src else css + src
+    with tempfile.NamedTemporaryFile('w', suffix='.html', delete=False, encoding='utf-8') as f:
+        f.write(src)
+        tmp = f.name
+    try:
+        with tempfile.TemporaryDirectory() as prof:
+            r = subprocess.run(
+                [chrome, '--headless=new', '--disable-gpu', '--no-sandbox',
+                 f'--user-data-dir={prof}', '--no-pdf-header-footer',
+                 f'--print-to-pdf={pdf_path}', f'file://{tmp}'],
+                capture_output=True, text=True, timeout=timeout)
+        if r.returncode != 0 or not os.path.exists(pdf_path):
+            print('⚠️  PDF 生成失败：' + (r.stderr or '')[-300:], file=sys.stderr)
+            return False
+        return True
+    except subprocess.TimeoutExpired:
+        print('⚠️  PDF 生成超时（>%ss）' % timeout, file=sys.stderr)
+        return False
+    finally:
+        os.unlink(tmp)
 
 TEMPLATE_CSS = """
 *{margin:0;padding:0;box-sizing:border-box}
@@ -804,8 +862,9 @@ if __name__ == '__main__':
     parser = ap.ArgumentParser(description='Generate waterproof analysis HTML report')
     parser.add_argument('input_json', help='Input JSON data file')
     parser.add_argument('output_html', nargs='?', help='Output desktop HTML file')
-    parser.add_argument('--mobile-output', help='Output iPhone-optimized HTML file')
-    parser.add_argument('--wechat-output', help='Output WeChat-optimized HTML file')
+    parser.add_argument('--pdf', help='输出手机版 PDF（微信可直接预览转发）')
+    parser.add_argument('--mobile-output', help='[已弃用] 移动版 HTML，改用 --pdf')
+    parser.add_argument('--wechat-output', help='[已弃用] 微信版 HTML，改用 --pdf')
     parser.add_argument('--save-to-db', action='store_true', help='Append data to shared data warehouse')
     parser.add_argument('--merge-by-name', action='store_true',
                         help='把材料名称相同的条目合并成一条，工程量求和')
@@ -830,15 +889,23 @@ if __name__ == '__main__':
     else:
         print(html)
 
-    # Mobile report (optional)
+    # 手机版 PDF（推荐；2026-10-24 起的默认产物）
+    if args.pdf:
+        if not args.output_html:
+            print('⚠️  --pdf 需要同时给 output_html（PDF 由桌面 HTML 打印）', file=sys.stderr)
+        elif html_to_pdf(args.output_html, args.pdf):
+            print(f'PDF written to {args.pdf}')
+
+    # 旧参数：仍可用，但流程里不再使用
     if args.mobile_output:
+        print('⚠️  --mobile-output 已弃用（手机版改用 --pdf），本次仍按旧行为生成', file=sys.stderr)
         mobile_html = generate_html_mobile(data)
         with open(args.mobile_output, 'w') as f:
             f.write(mobile_html)
         print(f'Mobile report written to {args.mobile_output}')
-    
-    # WeChat report (optional)
+
     if args.wechat_output:
+        print('⚠️  --wechat-output 已弃用（手机版改用 --pdf），本次仍按旧行为生成', file=sys.stderr)
         wechat_html = generate_html_wechat(data)
         with open(args.wechat_output, 'w') as f:
             f.write(wechat_html)

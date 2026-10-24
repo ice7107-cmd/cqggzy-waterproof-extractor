@@ -102,6 +102,9 @@ def pdfplumber_items(pdf_path):
                     if ew.vetoed(name):          # 与主流程同一套否决口径
                         continue
                     spec = ew.feature_spec(feat)
+                    # 与 make_item 同款：拆除项（特征是旧做法、工作内容写拆除）不靠特征收录
+                    if spec and ew.is_demolition(feat) and not any(k in name for k in ew.STRONG_KW):
+                        spec = ''
                     if (not any(k in name for k in BROAD)
                             and not spec and not ew.rule_for(name)):
                         continue
