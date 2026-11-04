@@ -533,7 +533,7 @@ def generate_html(data):
         if _n_split:
             _merged_note += (f'；其中 {_n_split} 条为复合清单项按材料拆分，'
                              f'工程量各计一份、金额只计一次')
-    _prefix = f'<div class="summary-box"><strong>\U0001f4cc 防水体系概览：</strong>本项目防水材料共提取到 <strong>{_n_show}</strong> 项{_merged_note}，其中防水卷材 <strong>{len(membranes) if items else tt_mem_count}</strong> 项、防水涂料 <strong>{len(coatings) if items else tt_ct_count}</strong> 项、防水砂浆 <strong>{len(mortars) if items else tt_mort_count}</strong> 项。'
+    _prefix = f'<div class="summary-box"><strong>\U0001f4cc 防水体系概览：</strong>本项目防水材料共提取到 <strong>{_n_show}</strong> 项{_merged_note}，其中防水卷材 <strong>{len(membranes) if items else tt_mem_count}</strong> 项、防水涂料 <strong>{len(coatings) if items else tt_ct_count}</strong> 项' + (f'、防水砂浆 <strong>{len(mortars) if items else tt_mort_count}</strong> 项' if (len(mortars) if items else tt_mort_count) else '') + '。'
     L.append(_prefix)
     if has_price:
         L.append(f'防水部分总造价约 <strong>\u00a5{gt:,.2f}</strong>。')
@@ -638,13 +638,13 @@ def generate_html_mobile(data):
     # Summary box
     _mq2 = sum(it['quantity'] for it in items)
     if has_price:
-        L.append(f'<div class="summary-box"><strong>📌 防水体系概览：</strong>本项目共提取 <strong>{len(items)}</strong> 项，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项、防水砂浆 <strong>{len(mortars)}</strong> 项。防水部分总造价约 <strong>¥{gt:,.2f}</strong>。')
+        L.append(f'<div class="summary-box"><strong>📌 防水体系概览：</strong>本项目共提取 <strong>{len(items)}</strong> 项，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项' + (f'、防水砂浆 <strong>{len(mortars)}</strong> 项' if mortars else '') + '。防水部分总造价约 <strong>¥{gt:,.2f}</strong>。')
         if bp:     L.append(f'占中标金额约 <strong>{fmt_pct(gt, bp)}</strong>。')
         if disc is not None:
             adj_gt = gt * (1 - disc/100)
             L.append(f'下浮后防水总价约 <strong>¥{adj_gt:,.2f}</strong>（下浮{disc:.2f}%）。')
     else:
-        L.append(f'<div class="summary-box"><strong>📌 防水体系概览：</strong>本项目共提取 <strong>{len(items)}</strong> 项，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项、防水砂浆 <strong>{len(mortars)}</strong> 项。防水总面积约 <strong>{_mq2:,.2f} m\u00b2</strong>。')
+        L.append(f'<div class="summary-box"><strong>📌 防水体系概览：</strong>本项目共提取 <strong>{len(items)}</strong> 项，其中防水卷材 <strong>{len(membranes)}</strong> 项、防水涂料 <strong>{len(coatings)}</strong> 项' + (f'、防水砂浆 <strong>{len(mortars)}</strong> 项' if mortars else '') + '。防水总面积约 <strong>{_mq2:,.2f} m\u00b2</strong>。')
         L.append('本清单未含综合单价，故只列工程量。')
     L.append('</div>')
 

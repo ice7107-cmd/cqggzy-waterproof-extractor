@@ -570,6 +570,7 @@ def extract_with_fitz(path):
     doc = fitz.open(path)
     items = []        # 命中强关键词的，即关键词法的结果
     candidates = []   # 宽进候选（含弱命中），交给 TypeSafe 复核
+    no_price = []     # 材料像防水、但清单里没给单价的条目（供人工复核）
 
     for pno in range(doc.page_count):
         page = doc[pno]
@@ -723,6 +724,16 @@ def extract_with_fitz(path):
                 else:
                     continue
             else:
+                # 清单里没给综合单价/合价：按约定跳过，但记下来供人工复核
+                # （这类条目以前是完全静默丢弃，报告上看不出少了什么）
+                # 只记录「本来会被收录、只是缺价」的：名称命中强关键词 / 边界材料 /
+                # 特征有材料，且没被排除清单否掉。防水套管、消防水、止水带不该刷屏。
+                _spec = feature_spec(r.get('feat'))
+                if (not vetoed(r['name'])
+                        and (any(k in r['name'] for k in STRONG_KW)
+                             or _spec or rule_for(r['name']))):
+                    no_price.append({'code': r['code'], 'name': r['name'], 'unit': r['unit'],
+                                     'quantity': qty, 'page': pno + 1})
                 continue
             for it in make_items(r['seq'], r['code'], r['name'], r['unit'], qty, up, tp,
                                  pno + 1, kw=BROAD_KW, strong=STRONG_KW, feat=r.get('feat')):
@@ -731,7 +742,7 @@ def extract_with_fitz(path):
                     items.append(it)
 
     doc.close()
-    return items, candidates
+    return items, candidates, no_price
 
 
 # ---------- 方案二：markitdown 文本兜底 ----------
@@ -786,10 +797,11 @@ def extract_with_markitdown(path):
 
 def extract(path):
     items, candidates = [], []
+    _no_price = []
     total_pages = None
     try:
         import fitz  # noqa: F401
-        items, candidates = extract_with_fitz(path)
+        items, candidates, _no_price = extract_with_fitz(path)
     except Exception as e:
         print(f'[提示] PyMuPDF 解析失败，改用 markitdown 兜底：{e}', file=sys.stderr)
 
@@ -816,7 +828,8 @@ def extract(path):
         if k not in seen2 and (it['total_price'] >= 10.0 or it.get('_split_note')):
             seen2.add(k)
             cand.append(it)
-    return {'total_pages': total_pages, 'items': res, 'candidates': cand, 'material_prices': []}
+    return {'total_pages': total_pages, 'items': res, 'candidates': cand,
+            'material_prices': [], '_no_price': _no_price}
 
 
 def print_manual_review(r, stream=None):
@@ -828,6 +841,7 @@ def print_manual_review(r, stream=None):
     A. 待确认候选：宽关键词抓到、但没被本地强判定收录 → 可能该补收（漏收风险）
     B. 仅靠项目特征收录：名称里没有材料词，材料名是从特征补的 → 核对名字是否取对
     C. 类别异常「其他防水」：该类已取消，正常应为 0 → 出现说明规则有缺口
+    D. 无价条目：材料像防水、但清单里没给综合单价 → 按约定未收录，需要人工决定
     """
     stream = stream or sys.stderr
     items = r.get('items') or []
@@ -839,12 +853,13 @@ def print_manual_review(r, stream=None):
                  if not any(k in (i.get('name') or '') for k in STRONG_KW)
                  and not rule_for(i.get('name') or '')]
     others = [i for i in items if (i.get('type') or '') == '其他防水']
+    no_price = r.get('_no_price') or []
 
-    if not (pending or feat_only or others):
+    if not (pending or feat_only or others or no_price):
         print('[复核] 人工确认清单：无边界条目。', file=stream)
         return
 
-    total = len(pending) + len(feat_only) + len(others)
+    total = len(pending) + len(feat_only) + len(others) + len(no_price)
     print(f'[复核] 人工确认清单（{total} 条，逐条扫一眼再出报告）：', file=stream)
     if pending:
         print(f'  A. 待确认候选 {len(pending)} 条（抓到但未收录，属实就补进 material_rules.json 重跑）：',
@@ -862,6 +877,12 @@ def print_manual_review(r, stream=None):
         print(f'  C. 类别异常「其他防水」{len(others)} 条（该类已取消，应为 0）：', file=stream)
         for i in others[:20]:
             print(f"     ! {str(i.get('name', ''))[:40]} | {i.get('total_price')} 元", file=stream)
+    if no_price:
+        print(f'  D. 无价条目 {len(no_price)} 条（清单只给工程量、没给综合单价，按约定未收录；'
+              f'需要就算人工补价）：', file=stream)
+        for i in no_price[:20]:
+            print(f"     ¥ {str(i.get('name', ''))[:40]} | {i.get('quantity')} {i.get('unit', '')} "
+                  f"| p{i.get('page')}", file=stream)
 
 
 if __name__ == '__main__':
