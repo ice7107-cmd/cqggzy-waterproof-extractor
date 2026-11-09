@@ -394,9 +394,17 @@ def feature_thickness(feat):
     for seg in re.split(r'(?=\d{1,2}[.．、](?!\d))|[;；]', t):
         if not _WP_CTX_RE.search(seg):
             continue
+        # 写法①「1.5mm厚」/「1.5厚」
         m = _TH_SRC_RE.search(seg)
         if m:
             return f'{m.group(1)}mm厚'
+        # 写法②「涂膜厚度、遍数:1.5mm」——值是纯数字、没有「厚」字。
+        # 只在同一段里出现「厚度」时才认，避免把规格长度（1000mm）当厚度。
+        if '厚度' in seg:
+            tail = seg.split('厚度', 1)[1]
+            m = re.search(r'(\d+(?:\.\d+)?)\s*(?:mm|㎜|毫米)?', tail)
+            if m:
+                return f'{m.group(1)}mm厚'
     return ''
 
 

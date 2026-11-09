@@ -44,6 +44,16 @@ CASES = [
     ('4厚SBS改性沥青防水卷材一道', False, True, '防水卷材'),
 ]
 
+
+# 厚度写法（2026-11-09）：厚度值可能单独写在「涂膜厚度、遍数:1.5mm」里，没有「厚」字
+TH_CASES = [
+    ('1.部位:屋面2.卷材品种、规格、厚度:分子粘双胎基高分子防水卷材3.涂膜厚度、遍数:1.5mm4.其他:满足',
+     '1.5mm厚分子粘双胎基高分子防水卷材'),
+    ('1.卷材品种、规格、厚度:耐根穿刺聚氯乙烯防水卷材，双面自粘2.涂膜厚度、遍数:1.5mm3.防水层做法:综合考虑',
+     '1.5mm厚耐根穿刺聚氯乙烯防水卷材，双面自粘'),
+    ('5.保护层:40mm厚C20细石混凝土保护层', ''),   # 保护层不算防水层厚度
+]
+
 # make_item 层面的收录门槛：(名称, 单位, 特征, 期望是否保留)
 # 2026-10-21 用户口径：附属构件项若按长度（m/km）计量，即使特征里有防水材料也排除。
 PV100 = '4.防水:1.2厚PV100高分子自粘胶膜防水卷材'
@@ -123,6 +133,14 @@ def main():
         elif verbose:
             print(f'✓ 材料={got["name"]} | 部位={got["location"]}')
 
+    for feat, exp in TH_CASES:
+        got = ew.with_thickness(ew.feature_spec(feat), feat)
+        if got != exp:
+            bad += 1
+            print(f'✗ 厚度 {feat[:26]}…\n    得到 {got!r}（期望 {exp!r}）')
+        elif verbose:
+            print(f'✓ 厚度 → {got!r}')
+
     for feat, exp in SPLIT_CASES:
         got = ew.split_spec_by_type(ew.feature_spec(feat))
         if got != exp:
@@ -131,12 +149,14 @@ def main():
         elif verbose:
             print(f'✓ 拆分 → {got}')
 
-    total = len(CASES) + len(MAKE_CASES) + len(NAME_CASES) + len(SPLIT_CASES)
+    total = (len(CASES) + len(MAKE_CASES) + len(NAME_CASES)
+             + len(TH_CASES) + len(SPLIT_CASES))
     if bad:
         print(f'\n失败 {bad}/{total} 条')
         return 1
     print(f'✅ {total} 条口径用例全部通过（规则 {len(CASES)} + 收录门槛 {len(MAKE_CASES)}'
-          f' + 材料命名 {len(NAME_CASES)} + 复合拆分 {len(SPLIT_CASES)}）')
+          f' + 材料命名 {len(NAME_CASES)} + 厚度 {len(TH_CASES)}'
+          f' + 复合拆分 {len(SPLIT_CASES)}）')
     return 0
 
 
