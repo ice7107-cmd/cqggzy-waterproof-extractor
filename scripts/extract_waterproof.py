@@ -180,15 +180,48 @@ def extract_location(nm):
     return loc, nm
 
 
+_CN_NUM = {'一': 1, '二': 2, '两': 2, '三': 3, '四': 4, '五': 5,
+           '六': 6, '七': 7, '八': 8, '九': 9, '十': 10}
+# 「一道 / 二道 / 两道 / 2道」，可能带括号
+_DAO_TOKEN_RE = re.compile(r'[（(]?\s*([一二两三四五六七八九十]|\d{1,2})\s*道\s*[）)]?')
+
+
+def strip_layer_count(name):
+    """把「一道/二道/两道」这类**层数说明**从材料名里去掉，返回 (干净名, 层数)。
+
+    2026-11-10 用户口径：「4mmSBS耐根穿刺自粘防水卷材一道」就是该材料本身，
+    一道=1 层、二道/两道=2 层，层数不属于材料名。
+    """
+    if not name:
+        return name, 1
+    m = _DAO_TOKEN_RE.search(name)
+    if not m:
+        return name, 1
+    tok = m.group(1)
+    n = int(tok) if tok.isdigit() else _CN_NUM.get(tok, 1)
+    clean = (name[:m.start()] + name[m.end():]).strip(' -—、,，（）()')
+    return (clean or name), n
+
+
 def handle_dao(it):
-    """名称以 'N道' 开头时，去掉前缀并把工程量乘 N。"""
-    m = re.match(r'^(\d+)道', it['name'])
+    """处理材料名里的层数写法。
+
+    - 名称**以**「2道…」开头：旧行为——去前缀并把工程量乘 2（这类清单按层计量）。
+    - 其他位置（如「…卷材一道」）：只把层数从名称里去掉，工程量不变
+      （面积就是面积，层数体现在综合单价里）。
+    """
+    m = re.match(r'^(\d{1,2})\s*道', it['name'])
     if m:
         n = int(m.group(1))
         it['name'] = it['name'][m.end():].strip()
         it['quantity'] = round(it['quantity'] * n, 2)
-        it['total_price'] = round(it['quantity'] * it['unit_price'], 2)
+        if it.get('unit_price'):
+            it['total_price'] = round(it['quantity'] * it['unit_price'], 2)
         it['_dao_note'] = f'(×{n})'
+        return it
+    clean, _n = strip_layer_count(it['name'])
+    if clean != it['name']:
+        it['name'] = clean
     return it
 
 

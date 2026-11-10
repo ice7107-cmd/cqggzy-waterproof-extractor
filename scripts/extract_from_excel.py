@@ -279,7 +279,8 @@ def find_materials(text):
         if m.group('extra'):
             name += m.group('extra')
         name = re.sub(r'\s+', '', name)
-        if name not in out:
+        name = ew.strip_layer_count(name)[0]   # 2026-11-10：层数说明不进材料名
+        if name and name not in out:
             out.append(name)
     # 与上面已匹配区间重叠时跳过，避免同一行拆出两种材料重复计量
     if ew.USER_MAT_RE is not None:

@@ -54,6 +54,15 @@ TH_CASES = [
     ('5.保护层:40mm厚C20细石混凝土保护层', ''),   # 保护层不算防水层厚度
 ]
 
+
+# 层数写法（2026-11-10 用户口径）：一道=1层、二道/两道=2层，层数不属于材料名
+DAO_CASES = [
+    ('4mmSBS耐根穿刺自粘防水卷材一道', '4mmSBS耐根穿刺自粘防水卷材', 1),
+    ('4厚SBS改性沥青防水卷材一道', '4厚SBS改性沥青防水卷材', 1),
+    ('防水卷材（两道）', '防水卷材', 2),
+    ('2道4mm厚SBS改性沥青防水卷材', '4mm厚SBS改性沥青防水卷材', 2),
+]
+
 # make_item 层面的收录门槛：(名称, 单位, 特征, 期望是否保留)
 # 2026-10-21 用户口径：附属构件项若按长度（m/km）计量，即使特征里有防水材料也排除。
 PV100 = '4.防水:1.2厚PV100高分子自粘胶膜防水卷材'
@@ -133,6 +142,14 @@ def main():
         elif verbose:
             print(f'✓ 材料={got["name"]} | 部位={got["location"]}')
 
+    for src, exp_name, exp_n in DAO_CASES:
+        got_name, got_n = ew.strip_layer_count(src)
+        if got_name != exp_name or got_n != exp_n:
+            bad += 1
+            print(f'✗ 层数 {src} → ({got_name!r}, {got_n})（期望 ({exp_name!r}, {exp_n})）')
+        elif verbose:
+            print(f'✓ 层数 {src} → {got_name!r} ×{got_n}')
+
     for feat, exp in TH_CASES:
         got = ew.with_thickness(ew.feature_spec(feat), feat)
         if got != exp:
@@ -150,13 +167,13 @@ def main():
             print(f'✓ 拆分 → {got}')
 
     total = (len(CASES) + len(MAKE_CASES) + len(NAME_CASES)
-             + len(TH_CASES) + len(SPLIT_CASES))
+             + len(TH_CASES) + len(DAO_CASES) + len(SPLIT_CASES))
     if bad:
         print(f'\n失败 {bad}/{total} 条')
         return 1
     print(f'✅ {total} 条口径用例全部通过（规则 {len(CASES)} + 收录门槛 {len(MAKE_CASES)}'
           f' + 材料命名 {len(NAME_CASES)} + 厚度 {len(TH_CASES)}'
-          f' + 复合拆分 {len(SPLIT_CASES)}）')
+          f' + 层数 {len(DAO_CASES)} + 复合拆分 {len(SPLIT_CASES)}）')
     return 0
 
 
