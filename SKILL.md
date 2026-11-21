@@ -252,15 +252,19 @@ markitdown /tmp/qingdan.pdf > /tmp/qingdan.md
 
 > 📁 **输出目录约定**：报告统一输出到 `/Users/xiabing/AI/大禹/html/`，仪表盘 `waterproof_dashboard.html` 也在其中。
 
-> 📱 **产物约定（2026-10-24 用户确认）**：**电脑版只出 HTML，手机版只出 PDF**。
+> 📱 **产物约定（2026-10-24 / 2026-11-21 用户确认）**：**电脑版只出 HTML，手机版只出 PDF**。
 > 移动版 HTML、微信版 HTML、长图**都不再生成**——微信不预览 `.html`，转发出去打不开，
 > 手机端一律用 PDF（微信内可直接预览、放大、转发）。
+>
+> ☁️ **PDF 统一落在 iCloud Drive**：`~/Library/Mobile Documents/com~apple~CloudDocs/项目防水PDF/`
+> 这样 Mac 与 iPhone/iPad 通过「文件」App 自动同步同一份报告（iPhone：文件 → iCloud 云盘 →
+> 项目防水PDF）。HTML 仍留在 `/Users/xiabing/AI/大禹/html/`（仪表盘链接用，不需要跨设备）。
 
 ```bash
 # 桌面 HTML + 手机 PDF + 写入数据仓库
 python3 /Users/xiabing/.dsh/skills/cqggzy-waterproof-extractor/scripts/generate_report.py /tmp/waterproof_data.json \
   "/Users/xiabing/AI/大禹/html/项目名称_防水材料分析报告.html" \
-  --pdf "/Users/xiabing/AI/大禹/html/项目名称_防水材料分析报告.pdf" \
+  --pdf "/Users/xiabing/Library/Mobile Documents/com~apple~CloudDocs/项目防水PDF/项目名称_防水材料分析报告.pdf" \
   --save-to-db
 ```
 - `--pdf`: 用 Chrome/Edge/Chromium 无头打印成 A4 PDF（保留渐变与配色）。
@@ -518,6 +522,7 @@ python3 /Users/xiabing/AI/大禹/scripts/sync_dashboard.py
 
 ### 手机版（PDF）
 - 用 `--pdf` 参数生成，由桌面 HTML 无头打印，A4 版式
+- 输出目录固定为 iCloud Drive 的 `项目防水PDF/`（Mac/iPhone/iPad 自动同步）
 - 微信可直接预览、放大、转发；`.html` 在微信里打不开，所以手机端不要发 HTML
 - 打印时强制 `print-color-adjust:exact`，保证渐变、标签底色不被浏览器打印优化掉
 
